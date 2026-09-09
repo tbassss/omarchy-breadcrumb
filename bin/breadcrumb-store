@@ -29,6 +29,8 @@ LINK_TARGET_MAX = 2000
 STATES = ("ready", "in_progress", "waiting", "done")
 LINK_KINDS = ("web", "file", "folder")
 VIEWS = ("compact", "expanded")
+HISTORY_PAGE_DEFAULT = 20
+HISTORY_PAGE_MAX = 50
 
 ERROR_CODES = {
     "invalid_request": 2,
@@ -167,10 +169,16 @@ def init_schema(conn: sqlite3.Connection) -> None:
             CREATE TABLE IF NOT EXISTS activities (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                archived_at TEXT
             )
             """
         )
+        activity_cols = {
+            str(info[1]) for info in conn.execute("PRAGMA table_info(activities)").fetchall()
+        }
+        if "archived_at" not in activity_cols:
+            conn.execute("ALTER TABLE activities ADD COLUMN archived_at TEXT")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS checkpoints (
@@ -240,12 +248,170 @@ def plain_text(value: object, *, field: str, required: bool, max_len: int, allow
     return text
 
 
+def set_pref(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT INTO prefs(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
+
+
+def cmd_create_activity(conn: sqlite3.Connection, payload: dict) -> None:
+    name = plain_text(payload.get("name"), field="name", required=True, max_len=ACTIVITY_NAME_MAX)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        activity_id = str(uuid.uuid4())
+        created_at = utc_now()
+        conn.execute(
+            "INSERT INTO activities(id, name, created_at, archived_at) VALUES (?, ?, ?, NULL)",
+            (activity_id, name, created_at),
+        )
+        set_pref(conn, "selected_activity_id", activity_id)
+        conn.execute("COMMIT")
+    except sqlite3.Error as exc:
+        conn.execute("ROLLBACK")
+        fail("io", f"Could not save the activity: {exc}")
+    ok({"activity": {"id": activity_id, "name": name, "created_at": created_at, "archived_at": None}})
+
+
+def list_activity_rows(conn: sqlite3.Connection, *, include_archived: bool) -> list[sqlite3.Row]:
+    if include_archived:
+        return conn.execute(
+            """
+            SELECT id, name, created_at, archived_at
+            FROM activities
+            ORDER BY CASE WHEN archived_at IS NULL THEN 0 ELSE 1 END, rowid ASC
+            """
+        ).fetchall()
+    return conn.execute(
+        """
+        SELECT id, name, created_at, archived_at
+        FROM activities
+        WHERE archived_at IS NULL
+        ORDER BY rowid ASC
+        """
+    ).fetchall()
+
+
+def cmd_list_activities(conn: sqlite3.Connection, payload: dict) -> None:
+    include_archived = payload.get("include_archived", False)
+    if include_archived not in (True, False):
+        fail("validation", "include_archived must be a boolean")
+    rows = list_activity_rows(conn, include_archived=include_archived)
+    selected = pref(conn, "selected_activity_id", "")
+    activities = [activity_payload(row) for row in rows]
+    if selected and not any(item["id"] == selected for item in activities):
+        selected_row = load_activity(conn, selected)
+        selected = selected_row["id"] if selected_row is not None else None
+    elif not selected:
+        selected = activities[0]["id"] if activities else None
+    ok({"activities": activities, "selected_activity_id": selected or None})
+
+
+def require_activity_id(value: object) -> str:
+    if not isinstance(value, str) or not value:
+        fail("validation", "activity_id is required")
+    return value
+
+
+def cmd_rename_activity(conn: sqlite3.Connection, payload: dict) -> None:
+    activity_id = require_activity_id(payload.get("activity_id"))
+    name = plain_text(payload.get("name"), field="name", required=True, max_len=ACTIVITY_NAME_MAX)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        activity = load_activity(conn, activity_id)
+        if activity is None:
+            conn.execute("ROLLBACK")
+            fail("validation", "Unknown activity")
+        conn.execute("UPDATE activities SET name = ? WHERE id = ?", (name, activity_id))
+        conn.execute("COMMIT")
+    except sqlite3.Error as exc:
+        conn.execute("ROLLBACK")
+        fail("io", f"Could not rename the activity: {exc}")
+    row = load_activity(conn, activity_id)
+    ok({"activity": activity_payload(row)})
+
+
+def cmd_archive_activity(conn: sqlite3.Connection, payload: dict) -> None:
+    activity_id = require_activity_id(payload.get("activity_id"))
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        activity = load_activity(conn, activity_id)
+        if activity is None:
+            conn.execute("ROLLBACK")
+            fail("validation", "Unknown activity")
+        if activity["archived_at"]:
+            conn.execute("COMMIT")
+            ok({"activity": activity_payload(activity)})
+            return
+        archived_at = utc_now()
+        conn.execute("UPDATE activities SET archived_at = ? WHERE id = ?", (archived_at, activity_id))
+        conn.execute("COMMIT")
+    except sqlite3.Error as exc:
+        conn.execute("ROLLBACK")
+        fail("io", f"Could not archive the activity: {exc}")
+    row = load_activity(conn, activity_id)
+    ok({"activity": activity_payload(row)})
+
+
+def history_limit_value(value: object) -> int:
+    if value is None:
+        return HISTORY_PAGE_DEFAULT
+    if isinstance(value, bool) or not isinstance(value, int):
+        fail("validation", "limit must be an integer")
+    if value < 1 or value > HISTORY_PAGE_MAX:
+        fail("validation", f"limit must be between 1 and {HISTORY_PAGE_MAX}")
+    return value
+
+
+def history_before_value(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        fail("validation", "before_revision must be an integer")
+    if value < 1:
+        fail("validation", "before_revision must be a positive revision")
+    return value
+
+
+def cmd_history(conn: sqlite3.Connection, payload: dict) -> None:
+    activity_id = require_activity_id(payload.get("activity_id"))
+    limit = history_limit_value(payload.get("limit"))
+    before = history_before_value(payload.get("before_revision"))
+    activity = load_activity(conn, activity_id)
+    if activity is None:
+        fail("validation", "Unknown activity")
+    ok(history_page(conn, activity_id, limit, before))
+
+
+def history_page(conn: sqlite3.Connection, activity_id: str, limit: int, before: int | None) -> dict:
+    params: list[object] = [activity_id]
+    where = "activity_id = ?"
+    if before is not None:
+        where += " AND revision < ?"
+        params.append(before)
+    rows = conn.execute(
+        f"""
+        SELECT id, activity_id, revision, summary, next_step, context, state, author, saved_at
+        FROM checkpoints
+        WHERE {where}
+        ORDER BY revision DESC
+        LIMIT ?
+        """,
+        (*params, limit + 1),
+    ).fetchall()
+    has_more = len(rows) > limit
+    page = rows[:limit]
+    entries = [checkpoint_payload(conn, row) for row in page]
+    next_before = page[-1]["revision"] if has_more and page else None
+    return {"entries": entries, "has_more": has_more, "next_before_revision": next_before}
+
+
 def cmd_ensure_activity(conn: sqlite3.Connection, payload: dict) -> None:
     name = plain_text(payload.get("name"), field="name", required=True, max_len=ACTIVITY_NAME_MAX)
     conn.execute("BEGIN IMMEDIATE")
     try:
         existing = conn.execute(
-            "SELECT id, name, created_at FROM activities ORDER BY created_at ASC, id ASC LIMIT 1"
+            "SELECT id, name, created_at, archived_at FROM activities ORDER BY rowid ASC LIMIT 1"
         ).fetchone()
         if existing is not None:
             conn.execute("COMMIT")
@@ -267,11 +433,30 @@ def cmd_ensure_activity(conn: sqlite3.Connection, payload: dict) -> None:
 def load_activity(conn: sqlite3.Connection, activity_id: str | None) -> sqlite3.Row | None:
     if activity_id:
         return conn.execute(
-            "SELECT id, name, created_at FROM activities WHERE id = ?",
+            "SELECT id, name, created_at, archived_at FROM activities WHERE id = ?",
             (activity_id,),
         ).fetchone()
+    selected = pref(conn, "selected_activity_id", "")
+    if selected:
+        row = conn.execute(
+            "SELECT id, name, created_at, archived_at FROM activities WHERE id = ?",
+            (selected,),
+        ).fetchone()
+        if row is not None:
+            return row
+    active = conn.execute(
+        """
+        SELECT id, name, created_at, archived_at
+        FROM activities
+        WHERE archived_at IS NULL
+        ORDER BY rowid ASC
+        LIMIT 1
+        """
+    ).fetchone()
+    if active is not None:
+        return active
     return conn.execute(
-        "SELECT id, name, created_at FROM activities ORDER BY created_at ASC, id ASC LIMIT 1"
+        "SELECT id, name, created_at, archived_at FROM activities ORDER BY rowid ASC LIMIT 1"
     ).fetchone()
 
 
@@ -280,8 +465,19 @@ def pref(conn: sqlite3.Connection, key: str, default: str) -> str:
     return row["value"] if row is not None else default
 
 
+def activity_columns(row: sqlite3.Row) -> dict:
+    keys = set(row.keys())
+    archived = row["archived_at"] if "archived_at" in keys else None
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "created_at": row["created_at"],
+        "archived_at": archived,
+    }
+
+
 def activity_payload(row: sqlite3.Row) -> dict:
-    return {"id": row["id"], "name": row["name"], "created_at": row["created_at"]}
+    return activity_columns(row)
 
 
 def load_links(conn: sqlite3.Connection, checkpoint_id: str) -> list[dict]:
@@ -403,33 +599,48 @@ def cmd_get(conn: sqlite3.Connection, payload: dict) -> None:
     activity_id = payload.get("activity_id")
     if activity_id is not None and not isinstance(activity_id, str):
         fail("validation", "activity_id must be text")
+    include_archived = payload.get("include_archived", False)
+    if include_archived not in (True, False):
+        fail("validation", "include_archived must be a boolean")
     activity = load_activity(conn, activity_id)
     view = pref(conn, "view", "compact")
+    listed = [activity_payload(row) for row in list_activity_rows(conn, include_archived=include_archived)]
     if activity is None:
-        ok({"state": "empty", "activity": None, "current": None, "revision": 0, "view": view})
-        return
-    current_row = latest_checkpoint(conn, activity["id"])
-    if current_row is None:
         ok(
             {
                 "state": "empty",
-                "activity": activity_payload(activity),
+                "activity": None,
                 "current": None,
                 "revision": 0,
                 "view": view,
+                "selected_activity_id": None,
+                "activities": listed,
+                "history": {"entries": [], "has_more": False, "next_before_revision": None},
             }
         )
         return
+    if activity_id:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            set_pref(conn, "selected_activity_id", activity["id"])
+            conn.execute("COMMIT")
+        except sqlite3.Error as exc:
+            conn.execute("ROLLBACK")
+            fail("io", f"Could not save the selected activity: {exc}")
+    history = history_page(conn, activity["id"], HISTORY_PAGE_DEFAULT, None)
+    current_row = latest_checkpoint(conn, activity["id"])
+    base = {
+        "activity": activity_payload(activity),
+        "view": view,
+        "selected_activity_id": activity["id"],
+        "activities": listed,
+        "history": history,
+    }
+    if current_row is None:
+        ok({"state": "empty", "current": None, "revision": 0, **base})
+        return
     current = checkpoint_payload(conn, current_row)
-    ok(
-        {
-            "state": "ready",
-            "activity": activity_payload(activity),
-            "current": current,
-            "revision": current["revision"],
-            "view": view,
-        }
-    )
+    ok({"state": "ready", "current": current, "revision": current["revision"], **base})
 
 
 def cmd_publish(conn: sqlite3.Connection, payload: dict) -> None:
@@ -508,6 +719,91 @@ def cmd_publish(conn: sqlite3.Connection, payload: dict) -> None:
     ok({"current": current, "revision": current["revision"], "state": "ready"})
 
 
+def cmd_restore(conn: sqlite3.Connection, payload: dict) -> None:
+    activity_id = require_activity_id(payload.get("activity_id"))
+    checkpoint_id = payload.get("checkpoint_id")
+    if not isinstance(checkpoint_id, str) or not checkpoint_id:
+        fail("validation", "checkpoint_id is required")
+    expected = expected_revision_value(payload.get("expected_revision"))
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        activity = load_activity(conn, activity_id)
+        if activity is None:
+            conn.execute("ROLLBACK")
+            fail("validation", "Unknown activity")
+        source = conn.execute(
+            """
+            SELECT id, activity_id, revision, summary, next_step, context, state, author, saved_at
+            FROM checkpoints
+            WHERE id = ? AND activity_id = ?
+            """,
+            (checkpoint_id, activity_id),
+        ).fetchone()
+        if source is None:
+            conn.execute("ROLLBACK")
+            fail("validation", "Unknown checkpoint")
+        current = latest_revision(conn, activity_id)
+        if current != expected:
+            conn.execute("ROLLBACK")
+            fail(
+                "stale_revision",
+                "A newer checkpoint was saved. Reload before restoring.",
+                {"current_revision": current, "expected_revision": expected},
+            )
+        new_id = str(uuid.uuid4())
+        revision = current + 1
+        saved_at = utc_now()
+        conn.execute(
+            """
+            INSERT INTO checkpoints(
+                id, activity_id, revision, summary, next_step, context, state, author, saved_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                new_id,
+                activity_id,
+                revision,
+                source["summary"],
+                source["next_step"],
+                source["context"],
+                source["state"],
+                source["author"],
+                saved_at,
+            ),
+        )
+        for position, link in enumerate(load_links(conn, source["id"])):
+            conn.execute(
+                """
+                INSERT INTO checkpoint_links(checkpoint_id, position, label, kind, target)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (new_id, position, link["label"], link["kind"], link["target"]),
+            )
+        conn.execute("COMMIT")
+    except SystemExit:
+        raise
+    except sqlite3.IntegrityError:
+        conn.execute("ROLLBACK")
+        current = latest_revision(conn, activity_id)
+        fail(
+            "stale_revision",
+            "A newer checkpoint was saved. Reload before restoring.",
+            {"current_revision": current, "expected_revision": expected},
+        )
+    except sqlite3.Error as exc:
+        conn.execute("ROLLBACK")
+        fail("io", f"Could not restore the checkpoint: {exc}")
+    row = conn.execute(
+        """
+        SELECT id, activity_id, revision, summary, next_step, context, state, author, saved_at
+        FROM checkpoints WHERE id = ?
+        """,
+        (new_id,),
+    ).fetchone()
+    current = checkpoint_payload(conn, row)
+    ok({"current": current, "revision": current["revision"], "state": "ready"})
+
+
 def cmd_set_view(conn: sqlite3.Connection, payload: dict) -> None:
     view = payload.get("view")
     if view not in VIEWS:
@@ -539,8 +835,14 @@ def cmd_validate_link(payload: dict) -> None:
 
 COMMANDS = {
     "ensure-activity": cmd_ensure_activity,
+    "create-activity": cmd_create_activity,
+    "list-activities": cmd_list_activities,
+    "rename-activity": cmd_rename_activity,
+    "archive-activity": cmd_archive_activity,
     "get": cmd_get,
+    "history": cmd_history,
     "publish": cmd_publish,
+    "restore": cmd_restore,
     "set-view": cmd_set_view,
 }
 

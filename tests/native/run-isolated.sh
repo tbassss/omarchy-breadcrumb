@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Isolated Cave native validation for Breadcrumb issue #3.
+# Isolated Cave native validation for Breadcrumb issues #3 and #4.
 # Does NOT install/enable the plugin, restart the live shell, or write live config.
 set -euo pipefail
 
@@ -112,7 +112,7 @@ env -i \
   BREADCRUMB_RESULTS="$RESULTS" \
   OMARCHY_PATH=/usr/share/omarchy \
   PYTHONDONTWRITEBYTECODE=1 \
-  timeout 40 /usr/bin/qs -p "$WORKDIR/harness/shell.qml" --no-color -v \
+  timeout 70 /usr/bin/qs -p "$WORKDIR/harness/shell.qml" --no-color -v \
   >"$QS_STDOUT" 2>"$QS_STDERR"
 QS_RC=$?
 set -e
@@ -141,7 +141,7 @@ import json, sqlite3, os
 path = os.environ.get("SQLITE", "$WORKDIR/breadcrumb-data/breadcrumb.sqlite")
 con = sqlite3.connect(path)
 con.row_factory = sqlite3.Row
-acts = [dict(r) for r in con.execute("SELECT id, name, created_at FROM activities")]
+acts = [dict(r) for r in con.execute("SELECT id, name, created_at, archived_at FROM activities")]
 cps = [dict(r) for r in con.execute("SELECT id, activity_id, revision, summary, next_step, context, state, author, saved_at FROM checkpoints ORDER BY revision")]
 prefs = [dict(r) for r in con.execute("SELECT key, value FROM prefs")]
 print(json.dumps({"activities": acts, "checkpoints": cps, "prefs": prefs}, indent=2))

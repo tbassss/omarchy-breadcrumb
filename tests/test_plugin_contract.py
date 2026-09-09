@@ -58,8 +58,12 @@ class TestPluginContract(unittest.TestCase):
         self.assertIn("lastError", qml)
         self.assertIn("Save checkpoint", qml)
         self.assertIn("Create activity", qml)
-        self.assertNotIn("History", qml)
-        self.assertNotIn("activityPicker", qml)
+        self.assertIn("History", qml)
+        self.assertIn("activityPicker", qml)
+        self.assertIn("Save or discard this edit before switching activities.", qml)
+        self.assertIn("create-activity", qml)
+        self.assertIn("archive-activity", qml)
+        self.assertIn("Show archived", qml)
         self.assertGreaterEqual(qml.count("textFormat: Text.PlainText"), 8)
 
     def test_store_is_ui_seam_not_public_agent_cli(self) -> None:
@@ -100,6 +104,15 @@ class TestPluginContract(unittest.TestCase):
         self.assertIn("refresh clobbered genuine in-progress summary draft", qml)
         self.assertIn("panelLoader.active = false", qml)
         self.assertIn("Unsaved lantern draft", qml)
+        self.assertIn("createActivity()", qml)
+        self.assertIn("switchActivity(", qml)
+        self.assertIn("archiveActivity(", qml)
+        self.assertIn("restoreCheckpoint(", qml)
+        self.assertIn("App Project", qml)
+        self.assertIn("historyEntries", qml)
+        self.assertIn("activity id B mismatch after recreate", qml)
+        self.assertIn("archived activity was not readable", qml)
+        self.assertIn("restore did not append a new revision", qml)
 
 
 if __name__ == "__main__":
