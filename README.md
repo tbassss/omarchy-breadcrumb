@@ -4,7 +4,11 @@ A save point for your work — an Omarchy plugin for activity-based checkpoints,
 
 **In development. There is no released or live-installed version yet.**
 
-The repository now includes the first three implementation slices (issues #3, #4, and #5): a native bar-widget plugin and a local SQLite store so named activities can save, switch, archive, restore, and recover unpublished drafts. It is not enabled on a desktop, not an agent CLI, and not a release candidate.
+The repository now includes implementation slices through issue #6: a native
+bar-widget plugin, a local SQLite store, and a documented public command so
+named activities can save, switch, archive, restore, recover unpublished
+drafts, and accept agent checkpoints through the same store. It is not enabled
+on a desktop and not a release candidate.
 
 ## Planned experience
 
@@ -16,7 +20,8 @@ The repository now includes the first three implementation slices (issues #3, #4
 ## Project records
 
 - [Approved product spec](docs/PRODUCT_SPEC.md)
-- [Issue #5 implementation notes](docs/IMPLEMENTATION.md)
+- [Issue #6 command interface](docs/COMMAND.md)
+- [Issue #6 implementation notes](docs/IMPLEMENTATION.md)
 - [Contributing](CONTRIBUTING.md)
 - [Agent instructions](AGENTS.md)
 
@@ -24,7 +29,7 @@ The repository now includes the first three implementation slices (issues #3, #4
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
-python3 -m py_compile bin/breadcrumb-store tests/*.py
+python3 -m py_compile bin/breadcrumb-store bin/breadcrumb tests/*.py
 git diff --check
 ```
 

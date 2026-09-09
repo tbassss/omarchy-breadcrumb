@@ -15,6 +15,8 @@ MANIFEST = ROOT / "manifest.json"
 PANEL = ROOT / "Panel.qml"
 MODEL = ROOT / "Model.js"
 STORE = ROOT / "bin" / "breadcrumb-store"
+COMMAND = ROOT / "bin" / "breadcrumb"
+COMMAND_DOC = ROOT / "docs" / "COMMAND.md"
 
 
 class TestPluginContract(unittest.TestCase):
@@ -30,8 +32,11 @@ class TestPluginContract(unittest.TestCase):
         self.assertTrue((ROOT / data["entryPoints"]["barWidget"]).is_file())
         self.assertTrue(STORE.is_file())
         self.assertFalse(STORE.is_symlink())
+        self.assertTrue(COMMAND.is_file())
+        self.assertFalse(COMMAND.is_symlink())
         self.assertTrue(PANEL.is_file())
         self.assertTrue(MODEL.is_file())
+        self.assertTrue(COMMAND_DOC.is_file())
 
     def test_panel_uses_supported_shell_and_safe_subprocess(self) -> None:
         qml = PANEL.read_text(encoding="utf-8")
@@ -75,6 +80,20 @@ class TestPluginContract(unittest.TestCase):
         self.assertIn("expected_draft_revision", store)
         self.assertIn("save-draft", store)
         self.assertIn("discard-draft", store)
+        self.assertIn("cmd_head", store)
+        command = COMMAND.read_text(encoding="utf-8")
+        self.assertIn("breadcrumb.command.v1", command)
+        self.assertIn("MAX_STDIN_BYTES = 65536", command)
+        self.assertIn("FORBIDDEN_KEYS", command)
+        self.assertIn("consume_draft_revision", command)
+        self.assertNotIn("cmd_save_draft", command)
+        self.assertNotIn("cmd_discard_draft", command)
+        doc = COMMAND_DOC.read_text(encoding="utf-8")
+        self.assertIn("expected_revision", doc)
+        self.assertIn("stdin JSON", doc)
+        self.assertIn("ssh -o BatchMode=yes tbasss@the-cave", doc)
+        self.assertIn("not delivered", doc)
+        self.assertIn("installation gate", doc)
 
     def test_editor_dirty_tracks_user_edits_not_construction_text_changed(self) -> None:
         """Source contract only. Native recreate evidence is tests/native/."""
@@ -209,6 +228,22 @@ class TestPluginContract(unittest.TestCase):
         self.assertIn("overlap-autosave-nav", qml)
         self.assertIn("explicit save behind autosave was dropped", qml)
         self.assertIn("obsolete discard clobbered editor", qml)
+        self.assertIn("open-panel in-memory draft v2", qml)
+        self.assertIn("open-panel refresh missed public publish", qml)
+        self.assertIn("open-panel refresh clobbered in-memory draft", qml)
+        self.assertIn("closed-panel reopen missed public publish", qml)
+        self.assertIn("publishPublic(", qml)
+        self.assertIn("commandPath", qml)
+
+    def test_panel_probes_external_changes_without_clobber(self) -> None:
+        qml = PANEL.read_text(encoding="utf-8")
+        self.assertIn("commandPath", qml)
+        self.assertIn("changeProbe", qml)
+        self.assertIn("probeProc", qml)
+        self.assertIn('"head"', qml)
+        self.assertIn("noteExternalPublication", qml)
+        self.assertIn("draftBaseRevision", qml)
+        self.assertNotIn("consume_draft_revision", qml.split("function sendOp")[0])
 
 
 if __name__ == "__main__":

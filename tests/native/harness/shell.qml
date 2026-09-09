@@ -2,15 +2,13 @@ import Quickshell
 import Quickshell.Io
 import QtQuick
 
-// Isolated offscreen component driver for Breadcrumb #5 Panel.qml.
+// Isolated offscreen component driver for Breadcrumb #6 Panel.qml.
 // Classification: real candidate Panel.qml + real qs/Qt runtime + minimal
 // fake qs.Ui/qs.Commons. Not full omarchy-shell host integration.
 //
-// Retains #3 save/reopen/recreate and in-memory refresh, then durable
-// draft recover, compact published+indicator, persist-then-switch,
-// create-while-draft, and native conflict presentation via the store
-// publish seam. Construction-time TextField onTextChanged must not be
-// treated as a user draft.
+// Retains #3–#5 save/reopen/recreate, drafts, and store-seam conflict,
+// then public CLI open-panel refresh and closed-panel reopen.
+// Construction-time TextField onTextChanged must not be treated as a user draft.
 ShellRoot {
   id: harness
 
@@ -48,6 +46,12 @@ ShellRoot {
   property string overlapNavDraft: "overlap-autosave-nav-v2"
   property string overlapSaveText: "explicit-save-behind-autosave"
   property string overlapDiscardText: "typed-during-discard"
+  property string openAgentSummary: "Agent lantern while panel stayed open"
+  property string closedAgentSummary: "Agent lantern after the panel closed"
+  property string openMemoryDraft: "open-panel in-memory draft v2"
+  property int publicExpectedRevision: 0
+  property int openDraftBase: 0
+  property int closedExpectedRevision: 0
   property bool externalDone: false
   property var qmlErrors: []
 
@@ -138,7 +142,7 @@ ShellRoot {
       restoredRevision: restoredRevision,
       qmlErrors: qmlErrors,
       classification: "component-test-not-full-host-integration",
-      notes: "Real Panel.qml driven through createActivity/saveCheckpoint/saveDraft/switchActivity/archiveActivity/restoreCheckpoint, genuine in-memory draft refresh, Loader recreate of a durable draft, compact published+indicator, and native conflictPrompt after store publish. Host qs.Ui/qs.Commons are a minimal facade of inspected Cave APIs. KeyboardPanel is stubbed to avoid WlrLayershell. Not a live bar install."
+      notes: "Real Panel.qml driven through createActivity/saveCheckpoint/saveDraft/switchActivity/archiveActivity/restoreCheckpoint, genuine in-memory draft refresh, Loader recreate of a durable draft, compact published+indicator, native conflictPrompt after store publish, and public CLI open/closed refresh. Host qs.Ui/qs.Commons are a minimal facade of inspected Cave APIs. KeyboardPanel is stubbed to avoid WlrLayershell. Not a live bar install."
     }
     if (extra) {
       for (var k in extra)
@@ -205,6 +209,29 @@ ShellRoot {
       author: "Agent"
     }
     externalPub.command = ["/usr/bin/python3", panelObj().storePath, "publish", JSON.stringify(payloadObj)]
+    externalPub.running = true
+  }
+
+  function publishPublic(activityIdValue, expected, summary) {
+    externalDone = false
+    var envelope = {
+      v: 1,
+      op: "publish",
+      activity_id: activityIdValue,
+      expected_revision: expected,
+      summary: summary,
+      next_step: "Review the conflict",
+      state: "in_progress",
+      author: "Agent"
+    }
+    var json = JSON.stringify(envelope)
+    externalPub.command = [
+      "/usr/bin/python3",
+      "-c",
+      "import os,sys,subprocess; p=subprocess.run([sys.executable,sys.argv[1],'publish'],input=sys.argv[2],capture_output=True,text=True,env=os.environ); sys.stdout.write(p.stdout); sys.stderr.write(p.stderr); raise SystemExit(p.returncode)",
+      panelObj().commandPath,
+      json
+    ]
     externalPub.running = true
   }
 
@@ -1337,6 +1364,103 @@ ShellRoot {
         return
       }
       snapshots.push(snap("obsolete-discard-protected"))
+      p.saveDraft()
+      step = 55
+      stepTicks = 0
+      return
+    }
+
+    if (step === 55) {
+      if (!p.opened) {
+        p.open()
+        return
+      }
+      if (!idle())
+        return
+      publicExpectedRevision = p.revision
+      openDraftBase = p.draftBaseRevision
+      p.editSummary = openMemoryDraft
+      p.markUserEdit()
+      publishPublic(activityId, publicExpectedRevision, openAgentSummary)
+      step = 56
+      stepTicks = 0
+      return
+    }
+
+    if (step === 56) {
+      if (!externalDone)
+        return
+      if (!idle())
+        return
+      if (p.current.summary !== openAgentSummary)
+        return
+      if (p.editSummary !== openMemoryDraft) {
+        fail("open-panel refresh clobbered in-memory draft")
+        return
+      }
+      if (!p.dirty) {
+        fail("open-panel refresh cleared in-memory dirty flag")
+        return
+      }
+      if (!p.conflictPrompt) {
+        fail("open-panel refresh did not use the conflict UI")
+        return
+      }
+      if (p.draftBaseRevision !== openDraftBase) {
+        fail("open-panel refresh adopted the published revision as draft base")
+        return
+      }
+      snapshots.push(snap("open-panel-public"))
+      p.close()
+      step = 57
+      stepTicks = 0
+      return
+    }
+
+    if (step === 57) {
+      if (p.opened) {
+        p.close()
+        return
+      }
+      if (p.current.summary !== openAgentSummary) {
+        fail("open-panel refresh missed public publish")
+        return
+      }
+      closedExpectedRevision = p.revision
+      snapshots.push(snap("closed-before-public"))
+      publishPublic(activityId, closedExpectedRevision, closedAgentSummary)
+      step = 58
+      stepTicks = 0
+      return
+    }
+
+    if (step === 58) {
+      if (!externalDone)
+        return
+      p.open()
+      step = 59
+      stepTicks = 0
+      return
+    }
+
+    if (step === 59) {
+      if (!p.opened)
+        return
+      if (!idle())
+        return
+      if (p.current.summary !== closedAgentSummary) {
+        fail("closed-panel reopen missed public publish")
+        return
+      }
+      if (p.editSummary !== openMemoryDraft) {
+        fail("closed-panel reopen clobbered in-memory draft")
+        return
+      }
+      if (!p.conflictPrompt) {
+        fail("closed-panel reopen did not keep the conflict UI")
+        return
+      }
+      snapshots.push(snap("closed-panel-public"))
       succeed()
     }
   }
