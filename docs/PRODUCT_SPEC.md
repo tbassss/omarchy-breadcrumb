@@ -1,7 +1,7 @@
 # Breadcrumb — Product Spec
 
-Status: Product behavior approved by Tyler in conversation. Implementation has not started.
-Stage: Repository bootstrap; visual prototype is next.
+Status: Product behavior approved by Tyler in conversation. Implementation slices #3–#7 exist in this repository; issue #8 is release-candidate preparation only.
+Stage: First-candidate prep. Not live-installed and not a published release.
 Mainframe Build Tracker: None.
 
 ## Purpose
@@ -97,7 +97,7 @@ No dependency on Tyler's custom Tray repair. Use supported Omarchy plugin interf
 
 ## Delivery sequence after spec approval
 
-1. Create the proposed private repository tbassss/omarchy-breadcrumb after checking availability and authenticated permissions. Explicitly preserve private visibility. Add development README, this approved spec, contributor/agent rules, issue and PR templates, and source-data exclusions. MIT is the proposed license; confirm before publication.
+1. Create the proposed private repository tbassss/omarchy-breadcrumb after checking availability and authenticated permissions. Explicitly preserve private visibility. Add development README, this approved spec, contributor/agent rules, issue and PR templates, and source-data exclusions. MIT license, owner-approved 2026-09-09; see LICENSE. Public visibility remains a separate approval.
 2. Prepare a small visual prototype to settle the activity selector and at-a-glance checkpoint hierarchy before substantial UI implementation.
 3. Translate the approved behavior into bounded GitHub issues and an implementation plan. GitHub issues are the execution backlog; no Kanban or competing backlog requested.
 4. Build vertical slices: one persistent manual checkpoint; multiple activities/history; agent command and draft-conflict handling; release usability and packaging. Use RED-to-GREEN checks and real receipts. Persistence and concurrent update semantics require independent risk-focused review before accepting the candidate.
