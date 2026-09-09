@@ -20,11 +20,23 @@ Private rollback backup on Cave: `~/.local/state/breadcrumb-reinstall/20260909-1
 (plugin, shell.json, SQLite online backup, receipt). Restore only under explicit
 approval; never automatically overwrite current user data with an older backup.
 
-Remaining acceptance: live theme and dual-monitor placement, actual host Escape /
-popout switching / overflow behavior, distinct compact published reopen after
-restart; alternate conflict paths and missing-file opening remain component-tested
-rather than owner-confirmed live. The native component suite has not been rerun
-after the icon change. These are evidence gaps, not demonstrated runtime defects.
+Subsequent owner checks confirmed live theme colors after reopening, placement on
+both monitors, scroll access to Save/History, Escape closure, switching to the
+volume popup, and Compact published content with a separate draft indicator.
+
+Final native rerun against `0ecb440968d5754b5cb17a8e9be62b58ff41d78e`
+(documentation-only successor of the runtime above) passed: runner/validation/qs
+exit 0, ui_ok=true, step=96, qmlErrors=[], hung launcher timeout/reap verified.
+Composer checked archive SHA-256 and Panel/store equality against local source.
+See [native report](FINAL_NATIVE_VERIFICATION.md). Packaged controls ran with host
+Panel/KeyboardPanel stubs; live owner checks supply separate host evidence.
+
+Residual coverage limits: no separate Compact-only restart journey, every-theme
+matrix, live hard-crash injection, or owner exercise of every alternate conflict /
+missing-file path. Relevant store/component tests cover those implemented paths;
+these limits are disclosed, not claims of additional live passes. Source review
+and the completed live/component evidence support presenting the private candidate
+for owner merge approval, not public release or listing approval.
 
 Repository remains private. Merge, public visibility, tag/release, and directory
 submission remain separate approvals. None was performed by this review.
