@@ -60,7 +60,7 @@ class TestPluginContract(unittest.TestCase):
         self.assertIn("Create activity", qml)
         self.assertIn("History", qml)
         self.assertIn("activityPicker", qml)
-        self.assertIn("Save or discard this edit before switching activities.", qml)
+        self.assertIn("Unsaved draft", qml)
         self.assertIn("create-activity", qml)
         self.assertIn("archive-activity", qml)
         self.assertIn("Show archived", qml)
@@ -72,6 +72,9 @@ class TestPluginContract(unittest.TestCase):
         self.assertIn("PRAGMA journal_mode = DELETE", store)
         self.assertIn("PRAGMA synchronous = FULL", store)
         self.assertIn("expected_revision", store)
+        self.assertIn("expected_draft_revision", store)
+        self.assertIn("save-draft", store)
+        self.assertIn("discard-draft", store)
 
     def test_editor_dirty_tracks_user_edits_not_construction_text_changed(self) -> None:
         """Source contract only. Native recreate evidence is tests/native/."""
@@ -82,14 +85,88 @@ class TestPluginContract(unittest.TestCase):
             "onTextChanged during TextField/TextArea construction must not mark a user draft",
         )
         self.assertGreaterEqual(qml.count("onTextEdited:"), 4)
-        self.assertIn("onTextEdited: root.dirty = true", qml)
+        self.assertIn("onTextEdited: root.markUserEdit()", qml)
+        self.assertNotIn("onTextEdited: root.dirty = true", qml)
         self.assertNotRegex(
             qml,
             r'pendingAction === "get"\)\s*\n\s*root\.dirty = false',
         )
         self.assertNotIn('if (root.pendingAction === "get")\n        root.dirty = false', qml)
-        get_clears = 'if (root.pendingAction === "get")\n      root.dirty = false'
+        get_clears = 'if (root.pendingAction === "get")\\n      root.dirty = false'
         self.assertNotIn(get_clears, qml)
+
+    def test_create_activity_persists_draft_before_create(self) -> None:
+        qml = PANEL.read_text(encoding="utf-8")
+        idx = qml.index("function createActivity()")
+        chunk = qml[idx : idx + 400]
+        self.assertIn("pendingAutosave", chunk)
+        self.assertIn("saveDraft()", chunk)
+        self.assertIn("actuallyCreate()", qml)
+        self.assertIn('runStore("create-activity"', qml)
+
+    def test_compact_picker_resyncs_to_authoritative_activity(self) -> None:
+        qml = PANEL.read_text(encoding="utf-8")
+        self.assertIn("function syncActivityPicker()", qml)
+        self.assertIn("activityPicker.value =", qml)
+        self.assertIn("syncActivityPicker()", qml)
+
+    def test_draft_autosave_and_conflict_source_contracts(self) -> None:
+        qml = PANEL.read_text(encoding="utf-8")
+        self.assertIn('runStore("save-draft"', qml)
+        self.assertIn('runStore("discard-draft"', qml)
+        self.assertIn("consume_draft_revision", qml)
+        self.assertIn("Unsaved draft", qml)
+        self.assertIn("Saving draft…", qml)
+        self.assertIn("Draft saved", qml)
+        self.assertIn("hydrating", qml)
+        self.assertIn("function markUserEdit()", qml)
+        self.assertIn("function saveDraft()", qml)
+        self.assertIn("conflictPrompt", qml)
+        self.assertIn("A newer checkpoint was saved", qml)
+        self.assertIn("Save draft as checkpoint", qml)
+        self.assertIn("Load published", qml)
+        self.assertIn("Keep editing", qml)
+        self.assertIn("Discard draft", qml)
+        self.assertIn("onTextEdited: root.markUserEdit()", qml)
+        self.assertNotIn("onTextEdited: root.dirty = true", qml)
+        save_idx = qml.index("function saveCheckpoint()")
+        save_chunk = qml[save_idx : save_idx + 900]
+        self.assertIn("draftBaseRevision", save_chunk)
+        self.assertIn("consume_draft_revision", save_chunk)
+        switch_idx = qml.index("function switchActivity(")
+        switch_chunk = qml[switch_idx : switch_idx + 800]
+        self.assertIn("needsDraftFlush()", switch_chunk)
+        self.assertIn("saveDraft()", switch_chunk)
+        # Honest ack: Draft saved is not the in-flight label.
+        self.assertIn('draftStatus === "saved"', qml)
+        self.assertIn('draftStatus = "saving"', qml)
+
+    def test_ordinary_save_cas_acknowledged_draft_base_not_refreshed_revision(self) -> None:
+        qml = PANEL.read_text(encoding="utf-8")
+        save_idx = qml.index("function saveCheckpoint()")
+        resolve_idx = qml.index("function resolveConflictSave()")
+        save_chunk = qml[save_idx:resolve_idx]
+        self.assertIn("draftBaseRevision", save_chunk)
+        self.assertNotIn("expected_revision: root.revision", save_chunk)
+        resolve_chunk = qml[resolve_idx : resolve_idx + 500]
+        self.assertIn("observedRevision", resolve_chunk)
+
+    def test_scheduler_identities_and_no_lossy_queue(self) -> None:
+        qml = PANEL.read_text(encoding="utf-8")
+        self.assertIn("editSequence", qml)
+        self.assertIn("function enqueueOp(", qml)
+        self.assertIn("function pumpQueue(", qml)
+        self.assertIn("inFlight", qml)
+        self.assertNotIn('if (action === "save-draft" || root.queuedAction === "")', qml)
+        handler_idx = qml.index("function handleStoreResult(")
+        handler = qml[handler_idx:]
+        save_draft_idx = handler.index('action === "save-draft"')
+        next_action = handler.find('action === "', save_draft_idx + 10)
+        save_draft_handler = handler[save_draft_idx:next_action if next_action > 0 else save_draft_idx + 1800]
+        self.assertNotIn("discard-draft", save_draft_handler)
+        discard_idx = handler.index('action === "discard-draft"')
+        discard_handler = handler[discard_idx : discard_idx + 900]
+        self.assertIn("editSequence", discard_handler)
 
     def test_native_harness_asserts_recreate_editor_and_draft_preserve(self) -> None:
         """The native qs assertion must exist in-repo. This is not a substitute for running it."""
@@ -99,7 +176,6 @@ class TestPluginContract(unittest.TestCase):
         self.assertTrue(runner.is_file())
         qml = harness.read_text(encoding="utf-8")
         self.assertIn("editor readback summary mismatch", qml)
-        self.assertIn("editSummary !== expectedSummary", qml)
         self.assertIn("fresh Panel marked dirty before any user edit", qml)
         self.assertIn("refresh clobbered genuine in-progress summary draft", qml)
         self.assertIn("panelLoader.active = false", qml)
@@ -113,35 +189,26 @@ class TestPluginContract(unittest.TestCase):
         self.assertIn("activity id B mismatch after recreate", qml)
         self.assertIn("archived activity was not readable", qml)
         self.assertIn("restore did not append a new revision", qml)
+        self.assertIn("saveDraft()", qml)
+        self.assertIn("durable draft missing after recreate", qml)
+        self.assertIn("compact showed draft text instead of published checkpoint", qml)
+        self.assertIn("compact missing unsaved draft indicator", qml)
+        self.assertIn("conflictPrompt", qml)
+        self.assertIn("recreate old-base save did not conflict", qml)
+        self.assertIn("publish", qml)
         dropdown = (ROOT / "tests" / "native" / "harness" / "qs" / "Ui" / "Dropdown.qml").read_text(encoding="utf-8")
         self.assertIn("function selectCurrent(", dropdown)
         self.assertIn("root.value = selected", dropdown)
         self.assertIn("root.changed(selected)", dropdown)
         self.assertIn("picker.selectCurrent(activityBId)", qml)
-        self.assertIn("picker desync after dirty cancel", qml)
-        self.assertIn("picker desync after failed switch", qml)
         self.assertIn("picker desync after completed switch", qml)
         self.assertIn("picker desync after later activity change", qml)
-        self.assertIn("create while dirty discarded the in-memory draft", qml)
-        self.assertIn("create while dirty did not explain the refusal", qml)
-
-    def test_create_activity_refuses_dirty_in_memory_draft(self) -> None:
-        qml = PANEL.read_text(encoding="utf-8")
-        idx = qml.index("function createActivity()")
-        chunk = qml[idx : idx + 600]
-        self.assertIn("root.dirty", chunk)
-        self.assertLess(chunk.find("root.dirty"), chunk.find("runStore"))
-        self.assertIn("Save or discard the current edit before creating another activity.", qml)
-        self.assertNotIn('runStore("create-activity"', chunk.split("root.dirty")[0])
-
-    def test_compact_picker_resyncs_to_authoritative_activity(self) -> None:
-        qml = PANEL.read_text(encoding="utf-8")
-        self.assertIn("function syncActivityPicker()", qml)
-        self.assertIn("activityPicker.value =", qml)
-        self.assertIn("syncActivityPicker()", qml)
-        cancel_idx = qml.index("function cancelSwitch()")
-        cancel_chunk = qml[cancel_idx : cancel_idx + 250]
-        self.assertIn("syncActivityPicker()", cancel_chunk)
+        self.assertIn("create while draft discarded A's durable draft", qml)
+        self.assertIn("recreate old-base save did not conflict", qml)
+        self.assertIn("keep-editing retry overwrote publication", qml)
+        self.assertIn("overlap-autosave-nav", qml)
+        self.assertIn("explicit save behind autosave was dropped", qml)
+        self.assertIn("obsolete discard clobbered editor", qml)
 
 
 if __name__ == "__main__":

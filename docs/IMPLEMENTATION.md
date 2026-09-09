@@ -1,151 +1,155 @@
-# Implementation notes for issue #4
+# Implementation notes for issue #5
 
-Named activities and dated checkpoint history. Not a release, not installed,
-not disk-draft recovery, not a public agent CLI.
+Crash-safe per-activity draft autosave and explicit stale-save resolution.
+Not a release, not installed, not a public agent CLI (issue #6).
+
+Technical decisions below were recorded before production code.
 
 ## Supported Omarchy APIs
 
-Unchanged from issue #3, inspected read-only on the-cave:
+Unchanged from issues #3 and #4, inspected read-only on the-cave:
 
 - Plugin contract: `manifest.json` at plugin root, `schemaVersion: 1`, `kinds` + `entryPoints`, no `omarchy.*` id, no symlinks.
 - Bar widget host: `qs.Ui.Panel` + `BarIconButton` + `KeyboardPanel` + `PanelKeyCatcher`, theme via `qs.Commons`.
 - Subprocess: `Quickshell.Io.Process` with `command` as a string list; JSON payload is an argv element.
 - Open links: `Quickshell.execDetached(open_argv)` after `validate-link`.
 - Toolchain on the-cave: `/usr/bin/python3` 3.14, `/usr/bin/qs` Quickshell 0.3.1, Qt 6.11.2, `omarchy plugin validate`.
+- Known full-host `qs.Ui.Button.enabled` mismatch remains issue #7. Package Button is not patched. Live host acceptance is not claimed.
 
-## Storage (current schema, additive)
+## Repair (review blockers on 52541e3)
 
-- Python 3 stdlib `sqlite3` only. Schema version remains **1**.
-- Default directory: `$XDG_DATA_HOME/breadcrumb` or `~/.local/share/breadcrumb` (0700). Override: `BREADCRUMB_DATA_DIR`.
-- Database `breadcrumb.sqlite` (0600). Rollback journal (`PRAGMA journal_mode=DELETE`) and `PRAGMA synchronous=FULL`.
-- Existing v1 files open in place. `activities.archived_at` is added with `ALTER TABLE` when missing. No new tables.
-- Activity identity is the UUID. Rename does not change `id`. Archive sets `archived_at` and does not delete rows.
-- Current checkpoint remains `MAX(revision)` per activity. History is the same append-only `checkpoints` table, newest first.
-- Selected activity is `prefs.selected_activity_id`. Publication and restore use `BEGIN IMMEDIATE` plus `expected_revision` CAS.
+Recorded before production edits. Three identities stay distinct for the whole slice:
 
-## Minimal store API
+| Identity | Owner | Advances when |
+|---|---|---|
+| Published checkpoint `revision` | `checkpoints` row | Successful `publish` / `restore` |
+| Durable draft **generation** | Per-activity head, including empty/tombstone | Every successful `save-draft`, `discard-draft`, and matching consume |
+| Editor **edit sequence** | UI session | Genuine user keystroke / dirty |
+| Immutable request snapshot | One queued/in-flight op | Captured at enqueue for payload + activity + edit sequence; CAS tokens bound at send |
 
-`bin/breadcrumb-store` remains the UI persistence seam, not the public agent command from issue #6.
+Ordinary draft save CAS-es the **acknowledged draft base**. Only an explicit reviewed resolution may advance that base, and that path itself CAS-es the **observed** published revision. Close/reopen and Keep editing must not adopt `root.revision` after refresh.
+
+Draft delete/consume must not physically remove the head row. Generation never restarts at 1. Stale discard/consume against an old generation cannot ABA-delete a newer live draft. Existing v1 files gain an additive `live` column; live payload bytes are not rewritten on migrate.
+
+UI store mutations go through an explicit FIFO scheduler. Unsent autosaves for the **same activity** may coalesce. Explicit Save, discard, and navigation are never silently dropped. Acks match the exact saved edit sequence. Newer editor text is preserved. Navigation waits for persist or is deferred with visible state. Stale responses never clear/overwrite the editor and never issue a compensating discard.
+
+## Storage (additive, compatibility)
+
+- Python 3 stdlib `sqlite3` only. Store **schema version remains 1**.
+- Existing v1 files open in place. `CREATE TABLE IF NOT EXISTS` adds `drafts` and `draft_links`. Existing draft tables get `live INTEGER NOT NULL DEFAULT 1` if missing. No rewrite of checkpoints, activities, or live draft payloads.
+- Default directory, `breadcrumb.sqlite` permissions, `PRAGMA journal_mode=DELETE`, `PRAGMA synchronous=FULL`, `BEGIN IMMEDIATE`, and `busy_timeout` are unchanged.
+- Drafts are **not** checkpoints. Autosave never `INSERT`s into `checkpoints` / history.
+
+### Explicit draft model
+
+One **head row** per activity, retained through empty/tombstone states:
+
+| Field | Role |
+|---|---|
+| `activity_id` | Stable activity UUID (PK). |
+| `revision` | Monotonic **generation** (CAS token). Starts at 1 on first save. Discard/consume increment it and leave a tombstone (`live=0`). Never reset to 0/1 while the row exists. Distinct from published checkpoint `revision`. |
+| `live` | `1` = payload is an outstanding draft. `0` = empty/tombstone. `get` reports `draft: null` for tombstones but still returns `draft_generation`. |
+| `base_revision` | Published checkpoint revision last **acknowledged** for this live draft. Ordinary `save-draft` cannot change it. Explicit `acknowledge_base` may advance it only when `observed_revision` CAS-matches the current published revision. |
+| summary / next_step / context / state / author / updated_at / links | Editor payload while `live=1`. Cleared on tombstone; generation is kept. Incomplete drafts are allowed. Link *targets* are stored for recovery; publish still validates links. |
+
+Missing row (legacy never-drafted activity) is generation `0`. After the first draft, the row remains. `drafts.revision` is the only draft concurrency token. Published `expected_revision` remains the only checkpoint CAS token.
+
+### Transaction / concurrency contracts
+
+Every mutating command (`save-draft`, `discard-draft`, `publish`, `restore`, …) loads the latest on-disk row **inside** `BEGIN IMMEDIATE`, checks the caller’s expected token, then writes or rolls back. Two store processes on the same file serialize at SQLite, not at a process-wide lock.
+
+| Operation | Freshness check | Success | Failure |
+|---|---|---|---|
+| `save-draft` | `expected_draft_revision` equals current generation (0 only if no row). Ordinary save: if `live=1`, `base_revision` must equal stored base. Optional `acknowledge_base` + `observed_revision`: `observed_revision` must equal latest published revision; then base becomes that observed revision. | Upsert generation N+1, `live=1`, replace links | `stale_revision` with `current_draft_revision` and `current_base_revision` when relevant; prior bytes unchanged |
+| `discard-draft` | Same generation CAS. Missing row + expected `0` is idempotent success. Tombstone + matching generation is idempotent success. | Increment generation, `live=0`, clear payload, drop links. Row remains. | Stale: live or tombstone head unchanged |
+| `publish` | Published `expected_revision` CAS. Optional `consume_draft_revision`: **required match** when present — mismatch fails the whole publish. Omit consume for the external/test-seam writer. | Append checkpoint; matching consume tombstones (does not DELETE) in the same transaction | Stale: published row and draft head both unchanged |
+| `get` | Read | `current` (published), `draft` (live payload or `null`), `draft_generation` (0 if no row) | Read errors do not return empty stand-ins for valid rows |
+
+Delayed writers: a `save-draft` / `discard-draft` / consume whose generation no longer matches is rejected and must not insert, delete, or tombstone a newer head. That is the store-side guard against ABA after discard/recreate and against resurrecting discarded drafts.
+
+External publications in this slice use the existing `publish` command as an **internal test seam**. The public agent CLI remains issue #6.
+
+## Store API additions
+
+`bin/breadcrumb-store` remains the UI persistence seam.
 
 | Command | Payload | Result |
 |---|---|---|
-| `ensure-activity` | `{name}` | First-slice bootstrap. Returns the existing first row if any. Does **not** mint additional IDs. |
-| `create-activity` | `{name}` | Always inserts a new UUID, selects it, returns `{activity}` including `archived_at`. |
-| `list-activities` | `{include_archived?}` | `{activities, selected_activity_id}`. Active first, then archived, insertion order. |
-| `rename-activity` | `{activity_id, name}` | Same `id`. Empty names rejected. |
-| `archive-activity` | `{activity_id}` | Sets `archived_at` once. Idempotent. Not deletion. |
-| `get` | `{activity_id?, include_archived?}` | Snapshot plus `activities` and first history page (`limit` 20). Passing `activity_id` persists selection. |
-| `history` | `{activity_id, limit?, before_revision?}` | `{entries, has_more, next_before_revision}`. `limit` 1–50, default 20. Newest first. No expiry. |
-| `publish` | issue #3 shape | Unchanged CAS append. |
-| `restore` | `{activity_id, checkpoint_id, expected_revision}` | Copies the historical row (including links) as a **new** id/revision/`saved_at`. Never `UPDATE`s old checkpoints. Stale expected revision fails without writing. |
-| `set-view` / `validate-link` | issue #3 | Unchanged. |
+| `save-draft` | `{activity_id, expected_draft_revision, base_revision, summary, next_step?, context?, state, author, links?, acknowledge_base?, observed_revision?}` | `{draft}` with `revision` (generation), `base_revision`, fields, `updated_at`, `links`. No history entry. |
+| `discard-draft` | `{activity_id, expected_draft_revision}` | `{draft: null, draft_generation}` |
+| `get` | unchanged | Adds `draft` (`null` or live payload) and `draft_generation`. `revision` is still the published checkpoint revision. |
+| `publish` | existing fields plus optional `consume_draft_revision` | On success, matching consume tombstones the head. Omitted consume leaves a live draft. Consume mismatch is `stale_revision` and does not append. |
 
-`activity` is `{id, name, created_at, archived_at}`. History entries use the existing checkpoint payload.
+Ordinary UI Save checkpoint sends `expected_revision` = acknowledged `draft.base_revision` (not the refreshed published revision). Explicit “Save draft as checkpoint” sends `expected_revision` = the observed revision captured when the conflict was shown.
 
-## Switching and in-memory edits
+## UI contracts
 
-Chosen behavior: **explicit Save / Discard / Cancel**. There is no per-activity in-memory draft map and no disk draft persistence (issue #5).
+Identities: `revision` (published), `draftRevision` (durable generation, including tombstone), `editSequence` (editor), `inFlight` snapshot (request id, activity, edit sequence, generation, payload).
 
-- Compact and Expanded share one selected activity and one editor.
-- If `dirty` is true, `switchActivity` does not call `get`. It shows the prompt and keeps the current activity and editor text.
-- Save publishes with CAS, then switches. Discard clears dirty and switches. Cancel leaves the current activity.
-- Restore while dirty is refused with an error; it does not clobber the editor.
-- `createActivity` while dirty is refused with a visible error until the user resolves the draft. It does not call `create-activity`, switch, or clear `dirty`.
-- Compact `activityPicker` is resynced in Panel to the authoritative current activity after canceled/failed/completed switches and later activity changes. Installed `qs.Ui.Dropdown.selectCurrent` assigns `value` before emitting `changed`, which breaks a QML property binding; the package control is not patched.
-- Same-instance `refresh()` still preserves a genuine dirty draft (issue #3). Panel recreate hydrates from the saved checkpoint only.
+- Compact always renders the **published** checkpoint (`current.*`), never editor/draft text. A visible “Unsaved draft” indicator appears when a **live** draft exists.
+- Expanded hydrates the editor from live `draft` when present, else from `current`. Collapse keeps the draft on disk and shows published text in Compact.
+- Panel recreate / close / reopen: `get` recovers a live draft into the editor and restores `draftBaseRevision` from `draft.base_revision`, not from refreshed `current.revision`. History count is unchanged. Tombstone generation is adopted so the next save CAS-es the head.
+- Same-instance `refresh()` must not clobber unacknowledged editor keystrokes (`editSequence` since last acked save).
+- Programmatic hydration sets a hydrating guard so recovered text cannot schedule autosave.
+- Autosave is scheduled only from genuine user edits. Acknowledgment is honest: “Draft saved” only when the acked snapshot’s `editSequence` still matches the editor. In-flight shows “Saving draft…”. Failure is `lastError` and never blanks the editor.
+- Store mutations serialize on an explicit FIFO scheduler (`enqueueOp` / `pumpQueue`). Coalesce **only** unsent autosaves for the same activity. Never silently drop explicit Save, discard, or navigation. CAS tokens are bound at send. Stale/wrong-activity responses are ignored for editor state and **must not** compensating-discard.
+- Activity switch and create: persist the current draft first. If a save is in flight or the editor moved past the in-flight sequence, **defer** navigation with visible “Saving draft…” and keep the picker on the current activity until the exact current sequence is persisted — or show the error and do not switch. Discard is an explicit Expanded action. Restore while a live draft exists is still refused.
+- Stale **Save checkpoint**: keep the draft in the editor, load the newer published `current` for display, capture `observedRevision`, show a conflict prompt. Ordinary Save continues to CAS `draftBaseRevision`. Keep editing does not advance base. Only “Save draft as checkpoint” publishes against `observedRevision` (itself a CAS). Load published discards against the current generation. The UI never silently retries ordinary publish with a refreshed expected revision.
 
-## Native UI
+## Out of scope
 
-- Compact: `activityPicker` dropdown of the shared activity list, published glance, long names elide.
-- Expanded: activity sidebar (create / rename / archive / show archived) plus the shared editor and dated history with Restore / Older.
-- Empty active lists and empty archived lists have honest copy. Archived current activities remain readable.
-
-## Out of scope (#5–#8)
-
-Disk draft recovery, public agent CLI, glance polish, live install/release.
+Public agent CLI (#6), glance polish / Button.enabled host gap (#7), live install/release (#8).
 
 ## Verification
 
-Python: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v` — 30 tests.
+Recorded after RED→GREEN. Python tests are not native Omarchy evidence.
 
-Store RED→GREEN (exact missing-command failures unless noted):
+### Source (Python)
 
-| Check | RED | GREEN |
-|---|---|---|
-| `create-activity` distinct stable IDs | unknown command rc=2 | PASS |
-| isolation + selected activity after restart | `get` did not persist selection | PASS |
-| rename keeps id and history | unknown command rc=2 | PASS |
-| archive is not deletion; archived remain readable | unknown command rc=2 | PASS |
-| dated bounded history pages, isolated | unknown command rc=2 | PASS |
-| restore appends a new revision; CAS; no rewrite | unknown command rc=2 | PASS |
-| empty/archived lists, 200-char names, v1 `ALTER`, concurrent publish/restore | first-run GREEN (covered by the commands above) | PASS |
+RED, against 52541e327fa8101b566926d71589e04148068270 plus the new tests only:
 
-Python tests are not native Omarchy evidence.
+```
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
+```
 
-### Native component test (2026-09-09, the-cave)
+Failed (7): missing `draft_session`; ordinary `save-draft` accepted a rebased `base_revision`; `acknowledge_base` did not CAS observed revision; stale discard/consume after recreate deleted the new draft (`draft_generation` absent); Panel still used `expected_revision: root.revision` and the singleton queue/`discard-draft` compensate path.
 
-Isolated `HOME`/`XDG`, `QT_QPA_PLATFORM=offscreen`, unique `XDG_RUNTIME_DIR`. No Wayland/DISPLAY, no live plugin enable, no `shell.json` mutation, no service restart.
+GREEN, full suite from the repository root:
 
-Classification: **component test** — real `Panel.qml` + `/usr/bin/qs` 0.3.1 + Qt 6.11.2 offscreen. Host `qs.Ui` / `qs.Commons` are a minimal facade. `KeyboardPanel` is stubbed to avoid WlrLayershell. Not full omarchy-shell host integration, not a live bar, not a live install.
+```
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
+python3 -m py_compile bin/breadcrumb-store tests/*.py
+git diff --check
+```
 
-Working-tree run before commit, evidence dir `/tmp/breadcrumb-issue4-20260909T150618-388067/evidence`, disposable workdir `/tmp/breadcrumb-native-v9bc`.
+53 tests OK (13.401s), including acknowledged-base CAS, Keep-editing old-base publish conflict, generation tombstones, ABA stale discard/consume, overlapping session scheduler, and source contracts for ordinary Save vs observed resolution.
 
-| Check | Result |
+### Native (isolated component, the-cave)
+
+Not live desktop acceptance. Unique disposable `HOME`/`XDG`, `QT_QPA_PLATFORM=offscreen`, no Wayland, no `shell.json` mutation, no plugin enable, live `qs` pid unchanged.
+
+```
+ARCHIVE=<git-archive-or-working-tree-tar> \
+CANDIDATE_SHA=<commit> \
+EVIDENCE_DIR=/tmp/breadcrumb-evidence-XXXX \
+HARNESS_SRC=tests/native/harness \
+  ./tests/native/run-isolated.sh
+```
+
+Working-tree run: `validate_rc=0`, `qs_rc=0`, `ui_ok=true`, `HARNESS_OK`, `classification=component-test-not-full-host-integration`, finished `step=54`. Recreate after external publish kept draft base 3 vs published 4; ordinary Save and Keep-editing retry both set `conflictPrompt` without overwriting the agent checkpoint; resolution published revision 5 against observed 4. Same-tick autosave+keystrokes+nav recovered `overlap-autosave-nav-v2`; explicit Save behind queued autosave published `explicit-save-behind-autosave`; overlapping discard left `typed-during-discard`. Live `shell.json` sha unchanged (`469bfd9b5c8a29ff3e5e8f45a09a66729eaf6a4e4b42462cf26fc99f4102eaee`); live `qs` pid 1600 unchanged; live plugin dir still had no `tbassss.breadcrumb`.
+
+### Classification
+
+| Check | Kind |
 |---|---|
-| `omarchy plugin validate` | PASS rc=0 |
-| qs offscreen harness | `HARNESS_OK` `ui_ok=true` qs_rc=0, 38 ticks, step 26 |
-| #3 save/reopen/recreate/draft preserve | PASS |
-| create A then B, separate saves | PASS (`Fictional Garden Path` / `App Project`) |
-| switch A/B readback + editor hydrate | PASS |
-| dirty switch Save/Discard/Cancel prompt | PASS (`switchPrompt=true`, draft kept, cancel stayed on A) |
-| recreate while B selected | PASS (`editSummary===current.summary`, `dirty=false`) |
-| archive B and read it back | PASS (`archived_at` set, checkpoint intact) |
-| restore first A checkpoint as revision 3 | PASS new id `a17d3946-…`, original id `b0dddda3-…` still present |
-| QML runtime errors | none (`qmlErrors: []`, empty stderr) |
-| Live `shell.json` hash | unchanged `469bfd9b5c8a29ff3e5e8f45a09a66729eaf6a4e4b42462cf26fc99f4102eaee` |
-| Live plugin dir `tbassss.breadcrumb` | absent |
-| Live qs pid | unchanged `1600` |
+| `unittest discover -s tests` | Source-contract / store process |
+| Isolated `tests/native/` on the-cave | Native component (real Panel.qml + qs + Qt offscreen) |
+| Full omarchy-shell bar / KeyboardPanel / Button.enabled | **Not run.** Issue #7. |
 
-Fictional checkpoints only. Native assertion is `tests/native/harness/shell.qml`, not a source-only substitute.
+## Remaining blockers
 
-Previous review of this candidate's #4 journey (create A/B, switch prompt, recreate, archive, restore) remains **PASS**. Those items were not reopened.
-
-### Native repair (2026-09-09, the-cave) — compact picker + dirty create
-
-Panel-only. Package `qs.Ui.Dropdown` was not patched. Harness `Dropdown.selectCurrent` assigns `value` then emits `changed`, matching `/usr/share/omarchy/shell/Ui/Dropdown.qml`.
-
-RED on rejected `fad0ef48` Panel bytes, evidence `/tmp/breadcrumb-issue4-red-fad0ef48/evidence`, workdir `/tmp/breadcrumb-native-lK7E`:
-
-| Check | Result |
-|---|---|
-| Python source contracts | FAIL `syncActivityPicker` missing; `createActivity` unguarded |
-| Native picker after dirty Cancel | FAIL `picker desync after dirty cancel` (`pickerValue` B, `activityId` A) |
-
-GREEN after Panel fix, evidence `/tmp/breadcrumb-issue4-green-fad0ef48/evidence`, workdir `/tmp/breadcrumb-native-Kexk`:
-
-| Check | Result |
-|---|---|
-| Python suite | PASS 30 tests |
-| `omarchy plugin validate` | PASS rc=0 |
-| qs offscreen harness | `HARNESS_OK` `ui_ok=true` qs_rc=0, 45 ticks, step 33 |
-| Previous #4 journey | PASS (not reopened) |
-| `selectCurrent` dirty Cancel keeps picker on A | PASS |
-| stale save-switch keeps draft + picker on A | PASS |
-| completed picker switch, then later JS activity change | PASS picker follows current id |
-| `createActivity` while dirty | PASS stayed on A, draft kept, `lastError` set, no Personal activity |
-| Live `shell.json` hash | unchanged `469bfd9b5c8a29ff3e5e8f45a09a66729eaf6a4e4b42462cf26fc99f4102eaee` |
-| Live plugin dir `tbassss.breadcrumb` | absent |
-| Live qs pid | unchanged `1600` |
-
-### Not claimed
-
-- Full host integration (live bar, real `KeyboardPanel` layer-shell, `IpcHandler`)
-- Visual desktop acceptance
-- Host `qs.Ui.Button.enabled` (package Button has no `enabled`; needs future full-host validation; not patched and not claimed host-tested)
-- Issue #5–#8
-- Disk draft recovery after Panel recreate
-- Zero undiscovered defects
-
-## Attribution
-
-AI implementation and testing assistance (Hermes Agent / Grok 4.6) wrote the store commands, Panel UI, tests, isolated Cave harness run, and these notes. Owner usability approval is not a claim that the owner audited code security. Independent persistence/security review of the exact candidate is still required.
+- Independent persistence/concurrency review (parent-owned; required before merge).
+- Public agent CLI is issue #6.
+- Glance polish and the known full-host `Button.enabled` mismatch are issue #7. Package Button was not patched.
+- Live install, restart, merge, and release remain unapproved.
+- This slice is not release-ready.
