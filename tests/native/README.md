@@ -42,9 +42,10 @@ Added for #7:
 19. First-use view is Compact. Recreate after Expand remembers Expanded.
 20. Long published summary stays a bounded Compact glance (`maximumLineCount` geometry); Expanded keeps the full text.
 21. Packaged `qs.Ui.Button` has no `enabled` property; Expand is `focusable: (!root.busy)` and Return toggles the view through packaged `PanelKeyCatcher` (not Expand `forceActiveFocus` bypass).
-22. Missing file Open shows a visible error and does not produce `open_argv`. Safe `https` Open records `xdg-open -- <url>` with `BREADCRUMB_NO_OPEN=1` (no real launch). Fake argv Process tests cover success, nonzero, and start-failure with visible `lastError`.
-23. Narrow expanded width stacks the activity sidebar. Many activities stay inside a capped Flickable. The main expanded column is a height-capped `panelScroller`; stub inflated 1393/1820px screenshots are not acceptance.
-24. Isolated `grabToImage` screenshots of the fictional harness panel only.
+22. Missing file Open shows a visible error and does not produce `open_argv`. Safe `https` Open records `xdg-open -- <url>` with `BREADCRUMB_NO_OPEN=1` (no real launch). Fake argv Process tests cover success, nonzero, and start-failure with visible `lastError`. A hanging fake launcher must hit the production 8s `openTimeout`, show the error, and reap the child; no real links are opened.
+23. Narrow expanded width stacks the activity sidebar. Many activities stay inside a capped Flickable. The main expanded column is a height-capped `panelScroller`; stub inflated 1393/1820px screenshots are not acceptance. At actual `360×520`, Tab/Down/Up/j must traverse to real Save, History Restore, and Links Open controls, keep each in the visible viewport, and activate a safe action. Record `contentY`/geometry/screenshots after that traversal; assigning `contentY` or merely proving overflow is not enough.
+24. Packaged `PanelKeyCatcher` + packaged Dropdown: `popupOpen` blocks the catcher so Down/Up/Return/Tab route to the dropdown. Editor `j` must modify field text, not merely leave the view expanded.
+25. Isolated `grabToImage` screenshots of the fictional harness panel only.
 
 These are native evidence. A Python source-contract pass is not a substitute. They are not live bar / real KeyboardPanel layer-shell acceptance. They are not a live installed SSH workflow.
 

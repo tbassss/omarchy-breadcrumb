@@ -2,6 +2,7 @@ import Quickshell
 import Quickshell.Io
 import QtQuick
 import QtQuick.Window
+import QtQuick.Controls
 import QtTest
 
 // Isolated offscreen component driver for Breadcrumb #7 Panel.qml.
@@ -64,6 +65,20 @@ ShellRoot {
   property string longSummary: "Lantern inventory overflow: brass, copper, wick oil, spare chimneys, tunnel maps, and the east gallery ledger. " + "Repeat the catalog so Compact must elide. "
   property string missingFile: "/tmp/breadcrumb-missing-lantern-map.txt"
   property int manyActivityTarget: 8
+  property var traversalEvidence: []
+  property var catcherRouting: ({})
+  property double hangStartedAt: 0
+  property double hangFinishedAt: 0
+  property int hangPid: 0
+  property int reapCheckExit: -999
+  property int saveRevisionBefore: 0
+  property int restoreRevisionBefore: 0
+  property int restoreHistoryCountBefore: 0
+  property string editorBefore: ""
+  property int hangWalkBudget: 48
+  property string linksTargetName: "openLinkButton"
+  property string linksTargetText: "Open"
+  property int linksCountBefore: 0
 
   function panelObj() {
     return panelLoader.item
@@ -120,6 +135,156 @@ ShellRoot {
       visible: !!item.visible,
       text: item.text !== undefined ? String(item.text) : ""
     }
+  }
+
+  function findButtonByText(item, text) {
+    if (!item)
+      return null
+    if (item.focusable !== undefined && String(item.text) === text)
+      return item
+    var kids = item.children
+    if (!kids)
+      return null
+    for (var i = 0; i < kids.length; i++) {
+      var found = findButtonByText(kids[i], text)
+      if (found)
+        return found
+    }
+    return null
+  }
+
+  function ensureCatcherFocus() {
+    var p = panelObj()
+    var catcherFocus = findNamed(p, "catcherFocus")
+    if (!p || !catcherFocus)
+      return false
+    catcherFocus.forceActiveFocus()
+    return !!(catcherFocus.activeFocus && !p.catcherBlocked)
+  }
+
+  function currentTarget() {
+    var p = panelObj()
+    if (!p || typeof p.keyboardTargets !== "function")
+      return null
+    var t = p.keyboardTargets()
+    if (!t || p.cursorIndex < 0 || p.cursorIndex >= t.length)
+      return null
+    return t[p.cursorIndex]
+  }
+
+  function targetMatches(item, name, text) {
+    if (!item)
+      return false
+    if (name && item.objectName === name)
+      return true
+    if (text && String(item.text) === text)
+      return true
+    return false
+  }
+
+  function viewportRecord(item, tag) {
+    var p = panelObj()
+    var scroller = findNamed(p, "panelScroller")
+    if (!scroller || !item)
+      return { tag: tag, missing: true }
+    var vp = item.mapToItem(scroller, 0, 0)
+    var rec = {
+      tag: tag,
+      contentY: scroller.contentY,
+      scrollerHeight: scroller.height,
+      scrollerWidth: scroller.width,
+      contentHeight: scroller.contentHeight,
+      itemWidth: item.width,
+      itemHeight: item.height,
+      viewX: vp.x,
+      viewY: vp.y,
+      cursorIndex: p.cursorIndex,
+      objectName: item.objectName || "",
+      text: item.text !== undefined ? String(item.text) : "",
+      assignedContentY: false,
+      containedY: (vp.y >= -2 && (vp.y + item.height) <= scroller.height + 2)
+    }
+    rec.contained = rec.containedY && vp.x < scroller.width && (vp.x + item.width) > 0
+    return rec
+  }
+
+  function walkToControl(name, text, maxMoves) {
+    var p = panelObj()
+    if (!p)
+      return null
+    p.cursorIndex = 0
+    p.cursorActive = false
+    p.applyCursorHighlight()
+    if (!ensureCatcherFocus())
+      return null
+    keyDriver.keyClick(Qt.Key_Tab)
+    keyDriver.keyClick(Qt.Key_Down)
+    var moves = 0
+    while (moves < maxMoves) {
+      var item = currentTarget()
+      if (targetMatches(item, name, text))
+        return item
+      keyDriver.keyClick((moves % 2 === 0) ? Qt.Key_Down : Qt.Key_J)
+      moves++
+    }
+    var last = currentTarget()
+    return targetMatches(last, name, text) ? last : null
+  }
+
+  function confirmUpDown(name, text) {
+    var p = panelObj()
+    var before = p.cursorIndex
+    if (before <= 0)
+      return true
+    keyDriver.keyClick(Qt.Key_Up)
+    if (p.cursorIndex !== before - 1)
+      return false
+    keyDriver.keyClick(Qt.Key_Down)
+    return targetMatches(currentTarget(), name, text)
+  }
+
+  function ensureMissingLink(p) {
+    if (!p || !p.linkModel)
+      return
+    var i
+    for (i = 0; i < p.linkModel.count; i++) {
+      var row = p.linkModel.get(i)
+      if (row && String(row.target) === missingFile)
+        return
+    }
+    p.linkModel.append({ label: "Missing lantern map", kind: "file", target: missingFile })
+  }
+
+  function activateCurrent(name, text, label) {
+    var p = panelObj()
+    if (!p) {
+      fail(label + " panel missing before activate")
+      return false
+    }
+    if (p.view !== "expanded") {
+      fail(label + " view left expanded before activate")
+      return false
+    }
+    if (!ensureCatcherFocus()) {
+      fail(label + " catcher focus missing before activate")
+      return false
+    }
+    if (!targetMatches(currentTarget(), name, text)) {
+      var cur = currentTarget()
+      fail(label + " cursor left target before activate got=" + (cur ? (cur.objectName || cur.text) : "none"))
+      return false
+    }
+    var before = p.catcherActivateCount
+    keyDriver.keyClick(Qt.Key_Return)
+    if (p.catcherActivateCount !== before + 1) {
+      fail(label + " Return did not activate catcher count=" + p.catcherActivateCount)
+      return false
+    }
+    if (p.view !== "expanded") {
+      fail(label + " Return collapsed the view")
+      return false
+    }
+    return true
   }
 
   function grabShot(tag) {
@@ -206,6 +371,7 @@ ShellRoot {
       catcherActivateCount: p.catcherActivateCount || 0,
       openLaunchState: p.openLaunchState || "",
       openLaunchExitCode: p.openLaunchExitCode || 0,
+      openProcRunning: !!p.openProcRunning,
       compactSummary: geomOf("compactSummary"),
       compactColumn: geomOf("compactColumn"),
       expandButton: geomOf("expandButton"),
@@ -255,7 +421,15 @@ ShellRoot {
     finished = true
     tickTimer.running = false
     console.log("HARNESS_OK")
-    writeOut(payload(true, {}))
+    writeOut(payload(true, {
+      traversalEvidence: traversalEvidence,
+      catcherRouting: catcherRouting,
+      hangStartedAt: hangStartedAt,
+      hangFinishedAt: hangFinishedAt,
+      hangElapsedMs: hangFinishedAt - hangStartedAt,
+      hangPid: hangPid,
+      reapCheckExit: reapCheckExit
+    }))
   }
 
   Process {
@@ -283,8 +457,7 @@ ShellRoot {
   function writeOut(obj) {
     var json = JSON.stringify(obj)
     console.log("HARNESS_RESULT " + json)
-    writer.command = ["/usr/bin/python3", "-c", "import os,sys; p=os.environ['BREADCRUMB_RESULTS']; open(p,'w',encoding='utf-8').write(sys.argv[1]); print('WROTE', p, len(sys.argv[1]))", json]
-    writer.running = true
+    Qt.quit()
   }
 
   function publishExternal(activityIdValue, expected, summary) {
@@ -324,7 +497,7 @@ ShellRoot {
     externalPub.running = true
   }
 
-  Window {
+  ApplicationWindow {
     id: hostWindow
     width: 960
     height: 1400
@@ -346,8 +519,27 @@ ShellRoot {
     }
   }
 
+  Process {
+    id: pidReadProc
+    stdout: StdioCollector {
+      id: pidReadOut
+      waitForEnd: true
+    }
+    onExited: function(code) {
+      var n = parseInt(String(pidReadOut.text || "").trim(), 10)
+      hangPid = (n === n && n > 0) ? n : 0
+    }
+  }
+
+  Process {
+    id: reapCheckProc
+    onExited: function(code) {
+      reapCheckExit = code
+    }
+  }
+
   Timer {
-    interval: 180000
+    interval: 240000
     running: true
     repeat: false
     onTriggered: fail("watchdog timeout at step " + step)
@@ -373,7 +565,8 @@ ShellRoot {
       return
     ticks += 1
     stepTicks += 1
-    if (stepTicks > 200) {
+    var budget = (step === 94) ? 400 : 200
+    if (stepTicks > budget) {
       fail("timeout in step " + step)
       return
     }
@@ -1848,6 +2041,10 @@ ShellRoot {
         fail("catcher consumed editor key")
         return
       }
+      if (p.editSummary === beforeSummary) {
+        fail("editor j did not modify text")
+        return
+      }
       findNamed(p, "catcherFocus").forceActiveFocus()
       if (p.catcherBlocked) {
         fail("catcher stayed blocked after leaving editor")
@@ -2060,6 +2257,458 @@ ShellRoot {
         return
       }
       snapshots.push(snap("remember-expanded"))
+      step = 85
+      stepTicks = 0
+      return
+    }
+
+    if (step === 85) {
+      p = panelObj()
+      if (!idle())
+        return
+      if (!activityId) {
+        fail("garden activity missing before narrow traversal")
+        return
+      }
+      p.contentWidthHint = 360
+      if (!p.opened)
+        p.open()
+      if (p.activity && p.activity.id !== activityId)
+        p.switchActivity(activityId)
+      if (p.view !== "expanded")
+        p.toggleView()
+      step = 86
+      stepTicks = 0
+      return
+    }
+
+    if (step === 86) {
+      p = panelObj()
+      if (!idle())
+        return
+      if (p.view !== "expanded") {
+        fail("narrow traversal view was not expanded")
+        return
+      }
+      if (!p.narrow) {
+        fail("narrow 360x520 traversal was not stacked")
+        return
+      }
+      if (!p.opened) {
+        fail("panel was not open for narrow keyboard traversal")
+        return
+      }
+      var panelBox = geomOf("breadcrumbPanel")
+      if (panelBox.height > 640) {
+        fail("narrow traversal panel inflated: " + panelBox.height)
+        return
+      }
+      if (!p.historyEntries || p.historyEntries.length < 1) {
+        fail("history controls missing before traversal")
+        return
+      }
+      if (p.linkModel)
+        p.linkModel.append({ label: "Missing lantern map", kind: "file", target: missingFile })
+      snapshots.push(snap("narrow-traversal-ready"))
+      step = 87
+      stepTicks = 0
+      return
+    }
+
+    if (step === 87) {
+      p = panelObj()
+      if (!idle())
+        return
+      var picker = findNamed(p, "statePicker")
+      if (!picker) {
+        fail("packaged state dropdown missing")
+        return
+      }
+      if (typeof picker.open !== "function" || typeof picker.toggle !== "function") {
+        fail("packaged dropdown open/toggle missing")
+        return
+      }
+      var beforeCursor = p.cursorIndex
+      var beforeView = p.view
+      var beforeState = String(p.editState)
+      var beforeActivate = p.catcherActivateCount
+      picker.open()
+      if (!picker.popupOpen) {
+        fail("dropdown popupOpen did not open")
+        return
+      }
+      if (!p.catcherBlocked) {
+        fail("popupOpen did not block catcher")
+        return
+      }
+      keyDriver.keyClick(Qt.Key_Down)
+      if (p.cursorIndex !== beforeCursor) {
+        fail("dropdown Down drove panel cursor")
+        return
+      }
+      if (p.view !== beforeView) {
+        fail("dropdown Down changed view")
+        return
+      }
+      keyDriver.keyClick(Qt.Key_Up)
+      if (p.cursorIndex !== beforeCursor) {
+        fail("dropdown Up drove panel cursor")
+        return
+      }
+      if (p.view !== beforeView) {
+        fail("dropdown Up changed view")
+        return
+      }
+      keyDriver.keyClick(Qt.Key_Tab)
+      if (p.cursorIndex !== beforeCursor) {
+        fail("dropdown Tab drove panel cursor")
+        return
+      }
+      if (p.view !== beforeView) {
+        fail("dropdown Tab changed view")
+        return
+      }
+      if (p.catcherActivateCount !== beforeActivate) {
+        fail("dropdown keys activated panel catcher")
+        return
+      }
+      keyDriver.keyClick(Qt.Key_Return)
+      if (picker.popupOpen) {
+        fail("dropdown Return did not close popup")
+        return
+      }
+      if (p.view !== beforeView) {
+        fail("dropdown Return changed view")
+        return
+      }
+      if (p.catcherActivateCount !== beforeActivate) {
+        fail("dropdown Return activated panel catcher")
+        return
+      }
+      var summary = findNamed(p, "expandedSummary")
+      if (!summary) {
+        fail("expanded summary field missing for editor j")
+        return
+      }
+      summary.forceActiveFocus()
+      if (!summary.activeFocus) {
+        fail("summary field did not take focus")
+        return
+      }
+      if (!p.catcherBlocked) {
+        fail("editor focus did not block catcher")
+        return
+      }
+      editorBefore = String(p.editSummary)
+      var activateBeforeJ = p.catcherActivateCount
+      keyDriver.keyClick(Qt.Key_End)
+      keyDriver.keyClick(Qt.Key_J)
+      if (p.editSummary === editorBefore) {
+        fail("editor j did not modify text")
+        return
+      }
+      if (String(p.editSummary).length !== editorBefore.length + 1) {
+        fail("editor j did not insert into text")
+        return
+      }
+      if (p.view !== "expanded") {
+        fail("catcher consumed editor key")
+        return
+      }
+      if (p.catcherActivateCount !== activateBeforeJ) {
+        fail("editor j activated catcher")
+        return
+      }
+      catcherRouting = {
+        popupOpen: true,
+        popupOpened: true,
+        catcherBlockedWhileOpen: true,
+        cursorUnchanged: true,
+        viewUnchanged: p.view === beforeView,
+        stateBefore: beforeState,
+        stateAfter: String(p.editState),
+        activateCount: p.catcherActivateCount,
+        editorBefore: editorBefore,
+        editorAfter: String(p.editSummary),
+        editorChanged: true
+      }
+      snapshots.push(snap("catcher-dropdown-editor-j"))
+      step = 88
+      stepTicks = 0
+      return
+    }
+
+    if (step === 88) {
+      p = panelObj()
+      if (!idle())
+        return
+      saveRevisionBefore = p.revision
+      if (!ensureCatcherFocus()) {
+        fail("catcher focus missing before Save traversal")
+        return
+      }
+      var saveBtn = walkToControl("saveCheckpointButton", "Save checkpoint", hangWalkBudget)
+      if (!saveBtn) {
+        var cur = currentTarget()
+        fail("keyboard did not reach Save cursor=" + p.cursorIndex + " target=" + (cur ? (cur.objectName || cur.text) : "none") + " n=" + (typeof p.keyboardTargets === "function" ? p.keyboardTargets().length : -1))
+        return
+      }
+      if (!confirmUpDown("saveCheckpointButton", "Save checkpoint")) {
+        fail("Up/Down did not keep Save under cursor")
+        return
+      }
+      var saveGeom = viewportRecord(saveBtn, "save")
+      if (!saveGeom.containedY) {
+        fail("Save was not in visible viewport after traversal")
+        return
+      }
+      if (saveGeom.contentY <= 0 && saveGeom.viewY > saveGeom.scrollerHeight) {
+        fail("Save geometry recorded without actual scroll")
+        return
+      }
+      traversalEvidence.push(saveGeom)
+      geometries.push(saveGeom)
+      snapshots.push(snap("narrow-save"))
+      grabShot("screenshot-narrow-save")
+      step = 880
+      stepTicks = 0
+      return
+    }
+
+    if (step === 880) {
+      p = panelObj()
+      if (!activateCurrent("saveCheckpointButton", "Save checkpoint", "Save"))
+        return
+      step = 89
+      stepTicks = 0
+      return
+    }
+
+    if (step === 89) {
+      p = panelObj()
+      if (!idle())
+        return
+      if (p.revision <= saveRevisionBefore) {
+        fail("Save keyboard activate did not publish")
+        return
+      }
+      ensureMissingLink(p)
+      snapshots.push(snap("narrow-save-after"))
+      step = 90
+      stepTicks = 0
+      return
+    }
+
+    if (step === 90) {
+      p = panelObj()
+      if (!idle())
+        return
+      ensureMissingLink(p)
+      var openBtn = walkToControl("openLinkButton", "Open", hangWalkBudget)
+      var linksName = "openLinkButton"
+      var linksText = "Open"
+      if (!openBtn) {
+        openBtn = walkToControl("addLinkButton", "Add link", hangWalkBudget)
+        linksName = "addLinkButton"
+        linksText = "Add link"
+      }
+      if (!openBtn) {
+        var cur = currentTarget()
+        fail("keyboard did not reach Links Open cursor=" + p.cursorIndex + " target=" + (cur ? (cur.objectName || cur.text) : "none") + " n=" + (typeof p.keyboardTargets === "function" ? p.keyboardTargets().length : -1) + " links=" + (p.linkModel ? p.linkModel.count : -1))
+        return
+      }
+      linksTargetName = linksName
+      linksTargetText = linksText
+      linksCountBefore = p.linkModel ? p.linkModel.count : 0
+      if (!confirmUpDown(linksTargetName, linksTargetText)) {
+        fail("Up/Down did not keep Links control under cursor")
+        return
+      }
+      var openGeom = viewportRecord(openBtn, "links-open")
+      if (!openGeom.containedY) {
+        fail("Links Open was not in visible viewport after traversal")
+        return
+      }
+      traversalEvidence.push(openGeom)
+      geometries.push(openGeom)
+      snapshots.push(snap("narrow-links"))
+      grabShot("screenshot-narrow-links")
+      step = 900
+      stepTicks = 0
+      return
+    }
+
+    if (step === 900) {
+      p = panelObj()
+      if (!activateCurrent(linksTargetName, linksTargetText, "Links"))
+        return
+      step = 91
+      stepTicks = 0
+      return
+    }
+
+    if (step === 91) {
+      p = panelObj()
+      if (!idle())
+        return
+      if (linksTargetText === "Open") {
+        var err = String(p.lastError || "").toLowerCase()
+        if (err.indexOf("missing") < 0 && err.indexOf("could not find") < 0 && err.indexOf("could not open") < 0) {
+          fail("Links Open keyboard activate had no visible error: " + p.lastError)
+          return
+        }
+        if (JSON.stringify(p.lastOpenArgv || []).indexOf("xdg-open") >= 0) {
+          fail("Links Open launched xdg-open")
+          return
+        }
+      } else if (p.linkModel && p.linkModel.count <= linksCountBefore) {
+        fail("Links Add link keyboard activate did not add a row")
+        return
+      }
+      traversalEvidence.push({ tag: "links-open-action", lastError: p.lastError, lastOpenArgv: p.lastOpenArgv || [], linksTarget: linksTargetText, linksCount: p.linkModel ? p.linkModel.count : -1 })
+      restoreRevisionBefore = p.revision
+      restoreHistoryCountBefore = (p.historyEntries || []).length
+      var restoreBtn = walkToControl("restoreCheckpointButton", "Restore", hangWalkBudget)
+      if (!restoreBtn) {
+        fail("keyboard did not reach History Restore")
+        return
+      }
+      if (!confirmUpDown("restoreCheckpointButton", "Restore")) {
+        fail("Up/Down did not keep History Restore under cursor")
+        return
+      }
+      var restoreGeom = viewportRecord(restoreBtn, "history-restore")
+      if (!restoreGeom.containedY) {
+        fail("History Restore was not in visible viewport after traversal")
+        return
+      }
+      traversalEvidence.push(restoreGeom)
+      geometries.push(restoreGeom)
+      snapshots.push(snap("narrow-history"))
+      grabShot("screenshot-narrow-history")
+      step = 910
+      stepTicks = 0
+      return
+    }
+
+    if (step === 910) {
+      p = panelObj()
+      if (!activateCurrent("restoreCheckpointButton", "Restore", "History Restore"))
+        return
+      step = 92
+      stepTicks = 0
+      return
+    }
+
+    if (step === 92) {
+      p = panelObj()
+      if (!idle())
+        return
+      if (p.revision <= restoreRevisionBefore) {
+        var restoreErr = String(p.lastError || "")
+        if (restoreErr.indexOf("Save or discard") < 0) {
+          fail("History Restore keyboard activate did not publish")
+          return
+        }
+      }
+      traversalEvidence.push({ tag: "history-restore-action", revision: p.revision, lastError: p.lastError, catcherActivateCount: p.catcherActivateCount })
+      snapshots.push(snap("narrow-history-after"))
+      step = 93
+      stepTicks = 0
+      return
+    }
+
+    if (step === 93) {
+      p = panelObj()
+      if (!idle())
+        return
+      var hang = Quickshell.env("BREADCRUMB_FAKE_OPEN_HANG")
+      var pidPath = Quickshell.env("BREADCRUMB_FAKE_OPEN_HANG_PID")
+      if (!hang || !pidPath) {
+        fail("hang launcher env missing")
+        return
+      }
+      hangPid = 0
+      reapCheckExit = -999
+      hangStartedAt = Date.now()
+      p.launchOpenArgv([hang, "--", "https://example.com/notes"])
+      pidReadProc.command = ["cat", pidPath]
+      pidReadProc.running = true
+      step = 94
+      stepTicks = 0
+      return
+    }
+
+    if (step === 94) {
+      p = panelObj()
+      if (p.openLaunchState !== "failed")
+        return
+      hangFinishedAt = Date.now()
+      var elapsed = hangFinishedAt - hangStartedAt
+      if (elapsed < 7500) {
+        fail("hang did not wait production 8s timeout: " + elapsed + "ms")
+        return
+      }
+      if (elapsed > 14000) {
+        fail("hang timeout drifted past production 8s: " + elapsed + "ms")
+        return
+      }
+      if (String(p.lastError) !== "Could not open that link.") {
+        fail("hang timeout had no visible error")
+        return
+      }
+      if (p.openProcRunning) {
+        fail("hang timeout did not stop openProc")
+        return
+      }
+      var argv = p.lastOpenArgv || []
+      if (argv.length && String(argv[0]).indexOf("xdg-open") >= 0) {
+        fail("hang launch used xdg-open")
+        return
+      }
+      if (JSON.stringify(argv).indexOf("fake-open-hang") < 0) {
+        fail("hang launch did not use fake launcher")
+        return
+      }
+      snapshots.push(snap("hang-timeout"))
+      if (hangPid <= 0) {
+        var pidPath = Quickshell.env("BREADCRUMB_FAKE_OPEN_HANG_PID")
+        pidReadProc.command = ["cat", pidPath]
+        pidReadProc.running = true
+        step = 95
+        stepTicks = 0
+        return
+      }
+      reapCheckProc.command = ["/usr/bin/python3", "-c", "import os,sys; sys.exit(0 if not os.path.isdir('/proc/' + sys.argv[1]) else 1)", String(hangPid)]
+      reapCheckProc.running = true
+      step = 96
+      stepTicks = 0
+      return
+    }
+
+    if (step === 95) {
+      if (hangPid <= 0)
+        return
+      reapCheckProc.command = ["/usr/bin/python3", "-c", "import os,sys; sys.exit(0 if not os.path.isdir('/proc/' + sys.argv[1]) else 1)", String(hangPid)]
+      reapCheckProc.running = true
+      step = 96
+      stepTicks = 0
+      return
+    }
+
+    if (step === 96) {
+      p = panelObj()
+      if (reapCheckExit < 0)
+        return
+      if (reapCheckExit !== 0) {
+        fail("hang child was not reaped")
+        return
+      }
+      if (p.openProcRunning) {
+        fail("openProc still running after reap")
+        return
+      }
+      snapshots.push(snap("hang-reaped"))
       succeed()
     }
   }

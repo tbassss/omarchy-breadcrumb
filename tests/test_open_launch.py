@@ -104,6 +104,8 @@ class TestOpenLaunch(unittest.TestCase):
         self.assertIn("Could not open that link.", qml)
         self.assertIn("BREADCRUMB_NO_OPEN", qml)
         self.assertIn("BREADCRUMB_OPEN_LAUNCHER", qml)
+        self.assertIn("interval: 8000", qml)
+        self.assertIn("id: openTimeout", qml)
 
 
 if __name__ == "__main__":

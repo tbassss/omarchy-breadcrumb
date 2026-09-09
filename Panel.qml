@@ -66,6 +66,7 @@ Panel {
   property int catcherActivateCount: 0
 
   readonly property bool busy: storeProc.running
+  readonly property bool openProcRunning: openProc.running
   readonly property bool expanded: root.view === "expanded"
   readonly property bool hasActivity: !!(root.activity && root.activity.id)
   readonly property bool hasCurrent: !!(root.current && root.current.id)
@@ -651,6 +652,19 @@ Panel {
     return s.slice(0, Math.max(1, limit - 1)) + "…"
   }
 
+  function collectLabeledButtons(item, labels, out) {
+    if (!item || item.visible === false)
+      return
+    var label = item.text !== undefined ? String(item.text) : ""
+    if (labels.indexOf(label) >= 0 && item.focusable)
+      out.push(item)
+    var kids = item.children
+    if (!kids)
+      return
+    for (var i = 0; i < kids.length; i++)
+      collectLabeledButtons(kids[i], labels, out)
+  }
+
   function keyboardTargets() {
     var t = []
     if (expandButton && expandButton.visible && expandButton.focusable)
@@ -660,14 +674,20 @@ Panel {
         t.push(activityPicker)
       return t
     }
+    if (statePicker && statePicker.visible)
+      t.push(statePicker)
     if (summaryField && summaryField.visible)
       t.push(summaryField)
     if (nextField && nextField.visible)
       t.push(nextField)
     if (contextArea && contextArea.visible)
       t.push(contextArea)
-    if (saveCheckpointButton && saveCheckpointButton.visible && saveCheckpointButton.focusable)
-      t.push(saveCheckpointButton)
+    var extras = []
+    collectLabeledButtons(expandedEditor, ["Open", "Add link", "Save checkpoint", "Restore", "Older"], extras)
+    for (var i = 0; i < extras.length; i++) {
+      if (t.indexOf(extras[i]) < 0)
+        t.push(extras[i])
+    }
     return t
   }
 
@@ -751,9 +771,20 @@ Panel {
       activityPicker.toggle()
       return
     }
+    if (item === statePicker && statePicker.toggle) {
+      statePicker.toggle()
+      root.revealItem(item)
+      return
+    }
     if (item === saveCheckpointButton) {
       if (!root.busy && saveCheckpointButton.focusable)
         root.saveCheckpoint()
+      return
+    }
+    var label = item.text !== undefined ? String(item.text) : ""
+    if (label === "Add link" || label === "Open" || label === "Restore" || label === "Older") {
+      item.clicked()
+      root.revealItem(item)
       return
     }
     if (item.forceActiveFocus)
@@ -1431,6 +1462,7 @@ Panel {
           }
 
           Column {
+            id: expandedEditor
             objectName: "expandedEditor"
             width: root.narrow ? expandedGrid.width : Math.max(1, expandedGrid.width - Style.space(212))
             spacing: Style.space(8)
@@ -1456,6 +1488,7 @@ Panel {
             }
             Dropdown {
               id: statePicker
+              objectName: "statePicker"
               width: parent.width
               label: "State"
               value: root.editState
@@ -1619,6 +1652,8 @@ Panel {
                 Row {
                   spacing: Style.space(6)
                   Button {
+                    id: openLinkButton
+                    objectName: "openLinkButton"
                     text: "Open"
                     focusable: (!root.busy && target.length > 0)
                     opacity: (!root.busy && target.length > 0) ? 1 : 0.45
@@ -1626,6 +1661,7 @@ Panel {
                     fontFamily: root.fontFamily
                     fontSize: Style.font.bodySmall
                     bordered: true
+                    onActiveFocusChanged: { if (activeFocus) root.revealItem(openLinkButton) }
                     onClicked: { if (!root.busy && target.length > 0) root.openValidatedLink(kind, target) }
                   }
                   Button {
@@ -1642,6 +1678,8 @@ Panel {
               }
             }
             Button {
+              id: addLinkButton
+              objectName: "addLinkButton"
               text: "Add link"
               focusable: (!root.busy && linkModel.count < 20)
               opacity: (!root.busy && linkModel.count < 20) ? 1 : 0.45
@@ -1649,6 +1687,7 @@ Panel {
               fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
               bordered: true
+              onActiveFocusChanged: { if (activeFocus) root.revealItem(addLinkButton) }
               onClicked: { if (!root.busy && linkModel.count < 20) { linkModel.append({ label: "", kind: "web", target: "" }); root.markUserEdit() } }
             }
             Text {
@@ -1671,6 +1710,7 @@ Panel {
               foreground: root.fg
               fontFamily: root.fontFamily
               bordered: true
+              onActiveFocusChanged: { if (activeFocus) root.revealItem(saveCheckpointButton) }
               onClicked: { if (!root.busy) root.saveCheckpoint() }
             }
             Button {
@@ -1742,6 +1782,8 @@ Panel {
                   textFormat: Text.PlainText
                 }
                 Button {
+                  id: restoreCheckpointButton
+                  objectName: "restoreCheckpointButton"
                   text: "Restore"
                   focusable: (!root.busy && !!modelData.id)
                   opacity: (!root.busy && !!modelData.id) ? 1 : 0.45
@@ -1749,6 +1791,7 @@ Panel {
                   fontFamily: root.fontFamily
                   fontSize: Style.font.bodySmall
                   bordered: true
+                  onActiveFocusChanged: { if (activeFocus) root.revealItem(restoreCheckpointButton) }
                   onClicked: { if (!root.busy && !!modelData.id) root.restoreCheckpoint(modelData.id) }
                 }
               }

@@ -126,39 +126,62 @@ HARNESS_SRC=tests/native/harness \
 ```
 
 Result: `validate_rc=0`, `qs_rc=0`, `ui_ok=true`, `HARNESS_OK`,
-`classification=component-test-not-full-host-integration`, finished `step=80`,
-`ticks=333`, `qmlErrors=[]`.
+`classification=component-test-not-full-host-integration`, finished `step=96`,
+`ticks=513`, `qmlErrors=[]`.
 
 Packaged overlay: `button_declares_enabled=0`; Dropdown `selectCurrent()` is the
-no-arg installed API; packaged `PanelKeyCatcher` is overlaid. Catcher Return on a
-non-editor descendant (`catcherFocus`) expanded Compact→Expanded
-(`catcherActivateCount=1`). Editor focus blocked the catcher; `j` typed into the
-summary field instead of moving the panel cursor. Busy Expand uses
-`focusable: (!root.busy)`.
+no-arg installed API; packaged `PanelKeyCatcher` and Dropdown are overlaid
+(SHAs in `/home/hermes/breadcrumb-issue7-final-evidence/logs/overlay-files.sha256`).
+Catcher Return on a non-editor descendant (`catcherFocus`) expanded Compact→Expanded.
+Editor focus blocked the catcher; `j` inserted into the summary (`ovej` → `ovejj`),
+not merely left Expanded. Packaged Dropdown `popupOpen` blocked the catcher so
+Down/Up/Return/Tab did not drive the panel cursor.
 
 Capped geometry (not the rejected 1393/1820 inflated stub screenshots):
 expanded panel `720×520` with `panelScroller.contentHeight=1393` and
 `contentY=80`; narrow `360×520` with `contentHeight=1820`. Compact glance
 `summaryHeight=32` at width 380.
 
+Narrow `360×520` keyboard Tab/Down/Up/j after actual traversal (no assigned
+`contentY`): Save `contentY=540` contained; Links Add link `contentY=502`
+contained; History Restore `contentY=948` contained. Save Return published
+revision 9→10. Links Return added a row. History Return showed the dirty-draft
+guard (`Save or discard the current edit before restoring history.`) instead of
+clobbering the draft. Screenshots after traversal:
+`screenshot-narrow-save.png`, `screenshot-narrow-links.png`,
+`screenshot-narrow-history.png` (each 360×520).
+
 Process launch (fake argv, no real apps): success `openLaunchState=exited`
 exit 0; nonzero exit 2 visible `Could not open that link.`; missing launcher
-start-failure same visible error. Safe web Open still recorded
+start-failure same visible error. Hanging fake launcher hit production
+`openTimeout` `interval: 8000` (`hangElapsedMs=8043`), visible
+`Could not open that link.`, `openLaunchState=failed`, `openProcRunning=false`,
+child pid 30756 reaped (`reapCheckExit=0`, exit 15/SIGTERM). Argv was the hang
+script, not a live `xdg-open`. Safe web Open still recorded
 `["xdg-open","--","https://example.com/notes"]` without launching. Missing-file
 error visible (`That file or folder is missing.`). Remember-view recreate stayed
 Expanded. Live `shell.json` sha unchanged
 (`469bfd9b5c8a29ff3e5e8f45a09a66729eaf6a4e4b42462cf26fc99f4102eaee`); live `qs`
-pid 1462 unchanged; live plugin dir still had no `tbassss.breadcrumb`.
-`ui-results.json` sha256 `420a9a218400d0dfdea2e2394aba2830737efa423c0272b23040a4df85287774`.
+pid 1494 unchanged; live plugin dir still had no `tbassss.breadcrumb`.
+Store SHA unchanged `c74d7275d66c678a3e30c70f3fb2e1fbb74f2542274ef2c44986330d52ff9d84`.
+
+Production change for this remaining evidence: `keyboardTargets` now includes
+Save, Links Open/Add link, and History Restore, with `revealItem` on focus and
+Return activation. That is the minimal focus/reveal fix so j/Down can reach
+those controls in the capped 360×520 viewport.
 
 Fictional isolated screenshots (copied locally, not committed):
 
-- `/tmp/breadcrumb-issue7-repair-evidence/screenshots/screenshot-compact.png` (380×277)
-- `/tmp/breadcrumb-issue7-repair-evidence/screenshots/screenshot-expanded.png` (720×520)
-- `/tmp/breadcrumb-issue7-repair-evidence/screenshots/screenshot-narrow.png` (360×520)
-- `/tmp/breadcrumb-issue7-repair-evidence/screenshots/screenshot-many-activities.png` (720×520)
+- `/home/hermes/breadcrumb-issue7-final-evidence/screenshots/screenshot-compact.png` (380×277)
+- `/home/hermes/breadcrumb-issue7-final-evidence/screenshots/screenshot-expanded.png` (720×520)
+- `/home/hermes/breadcrumb-issue7-final-evidence/screenshots/screenshot-narrow.png` (360×520)
+- `/home/hermes/breadcrumb-issue7-final-evidence/screenshots/screenshot-many-activities.png` (720×520)
+- `/home/hermes/breadcrumb-issue7-final-evidence/screenshots/screenshot-narrow-save.png` (360×520)
+- `/home/hermes/breadcrumb-issue7-final-evidence/screenshots/screenshot-narrow-links.png` (360×520)
+- `/home/hermes/breadcrumb-issue7-final-evidence/screenshots/screenshot-narrow-history.png` (360×520)
 
-Cave originals: `/tmp/breadcrumb-issue7-20260909191625-13635/evidence/screenshots/`.
+Cave originals: `/tmp/breadcrumb-issue7-final-20260909130243-30414/evidence/`.
+Durable copy: `/home/hermes/breadcrumb-issue7-final-evidence/` (candidate.tar, harness, overlay controls+SHAs, JSON, logs, screenshots, versions).
 
 ### Classification
 
