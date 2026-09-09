@@ -101,6 +101,14 @@ Panel {
       root.editName = root.activity.name || ""
       root.renameName = root.activity.name || ""
     }
+    root.syncActivityPicker()
+  }
+
+  function syncActivityPicker() {
+    if (!activityPicker)
+      return
+    var id = root.activity && root.activity.id ? String(root.activity.id) : ""
+    activityPicker.value = id
   }
 
   function copyCurrentToEditor() {
@@ -162,6 +170,11 @@ Panel {
   }
 
   function createActivity() {
+    if (root.dirty) {
+      root.lastError = "Save or discard the current edit before creating another activity."
+      root.syncActivityPicker()
+      return
+    }
     var name = String(root.createName || "").trim()
     if (!name)
       name = String(root.editName || "").trim()
@@ -189,11 +202,13 @@ Panel {
     if (root.activity && id === root.activity.id) {
       root.switchPrompt = false
       root.pendingSwitchId = ""
+      root.syncActivityPicker()
       return
     }
     if (root.dirty) {
       root.pendingSwitchId = id
       root.switchPrompt = true
+      root.syncActivityPicker()
       return
     }
     doSwitch(id)
@@ -221,6 +236,7 @@ Panel {
   function cancelSwitch() {
     root.pendingSwitchId = ""
     root.switchPrompt = false
+    root.syncActivityPicker()
   }
 
   function renameActivity() {
@@ -284,6 +300,7 @@ Panel {
         root.loadState = root.hasCurrent || root.hasActivity ? root.loadState : "error"
       if (root.loadState === "loading")
         root.loadState = "error"
+      root.syncActivityPicker()
       return
     }
     root.lastError = ""

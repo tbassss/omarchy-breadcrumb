@@ -50,6 +50,8 @@ Chosen behavior: **explicit Save / Discard / Cancel**. There is no per-activity 
 - If `dirty` is true, `switchActivity` does not call `get`. It shows the prompt and keeps the current activity and editor text.
 - Save publishes with CAS, then switches. Discard clears dirty and switches. Cancel leaves the current activity.
 - Restore while dirty is refused with an error; it does not clobber the editor.
+- `createActivity` while dirty is refused with a visible error until the user resolves the draft. It does not call `create-activity`, switch, or clear `dirty`.
+- Compact `activityPicker` is resynced in Panel to the authoritative current activity after canceled/failed/completed switches and later activity changes. Installed `qs.Ui.Dropdown.selectCurrent` assigns `value` before emitting `changed`, which breaks a QML property binding; the package control is not patched.
 - Same-instance `refresh()` still preserves a genuine dirty draft (issue #3). Panel recreate hydrates from the saved checkpoint only.
 
 ## Native UI
@@ -64,7 +66,7 @@ Disk draft recovery, public agent CLI, glance polish, live install/release.
 
 ## Verification
 
-Python: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v` — 28 tests.
+Python: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v` — 30 tests.
 
 Store RED→GREEN (exact missing-command failures unless noted):
 
@@ -106,10 +108,40 @@ Working-tree run before commit, evidence dir `/tmp/breadcrumb-issue4-20260909T15
 
 Fictional checkpoints only. Native assertion is `tests/native/harness/shell.qml`, not a source-only substitute.
 
+Previous review of this candidate's #4 journey (create A/B, switch prompt, recreate, archive, restore) remains **PASS**. Those items were not reopened.
+
+### Native repair (2026-09-09, the-cave) — compact picker + dirty create
+
+Panel-only. Package `qs.Ui.Dropdown` was not patched. Harness `Dropdown.selectCurrent` assigns `value` then emits `changed`, matching `/usr/share/omarchy/shell/Ui/Dropdown.qml`.
+
+RED on rejected `fad0ef48` Panel bytes, evidence `/tmp/breadcrumb-issue4-red-fad0ef48/evidence`, workdir `/tmp/breadcrumb-native-lK7E`:
+
+| Check | Result |
+|---|---|
+| Python source contracts | FAIL `syncActivityPicker` missing; `createActivity` unguarded |
+| Native picker after dirty Cancel | FAIL `picker desync after dirty cancel` (`pickerValue` B, `activityId` A) |
+
+GREEN after Panel fix, evidence `/tmp/breadcrumb-issue4-green-fad0ef48/evidence`, workdir `/tmp/breadcrumb-native-Kexk`:
+
+| Check | Result |
+|---|---|
+| Python suite | PASS 30 tests |
+| `omarchy plugin validate` | PASS rc=0 |
+| qs offscreen harness | `HARNESS_OK` `ui_ok=true` qs_rc=0, 45 ticks, step 33 |
+| Previous #4 journey | PASS (not reopened) |
+| `selectCurrent` dirty Cancel keeps picker on A | PASS |
+| stale save-switch keeps draft + picker on A | PASS |
+| completed picker switch, then later JS activity change | PASS picker follows current id |
+| `createActivity` while dirty | PASS stayed on A, draft kept, `lastError` set, no Personal activity |
+| Live `shell.json` hash | unchanged `469bfd9b5c8a29ff3e5e8f45a09a66729eaf6a4e4b42462cf26fc99f4102eaee` |
+| Live plugin dir `tbassss.breadcrumb` | absent |
+| Live qs pid | unchanged `1600` |
+
 ### Not claimed
 
 - Full host integration (live bar, real `KeyboardPanel` layer-shell, `IpcHandler`)
 - Visual desktop acceptance
+- Host `qs.Ui.Button.enabled` (package Button has no `enabled`; needs future full-host validation; not patched and not claimed host-tested)
 - Issue #5–#8
 - Disk draft recovery after Panel recreate
 - Zero undiscovered defects

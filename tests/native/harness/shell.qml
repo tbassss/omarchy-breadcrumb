@@ -39,10 +39,28 @@ ShellRoot {
   property string restoredCheckpointId: ""
   property int savedRevision: 0
   property int restoredRevision: 0
+  property int revisionBeforeStale: 0
+  property string dirtyCreateDraft: "Draft that must not vanish on create"
   property var qmlErrors: []
 
   function panelObj() {
     return panelLoader.item
+  }
+
+  function findActivityPicker(item) {
+    if (!item)
+      return null
+    if (item.label === "Activity" && typeof item.selectCurrent === "function")
+      return item
+    var kids = item.children
+    if (!kids)
+      return null
+    for (var i = 0; i < kids.length; i++) {
+      var found = findActivityPicker(kids[i])
+      if (found)
+        return found
+    }
+    return null
   }
 
   function snap(tag) {
@@ -53,6 +71,7 @@ ShellRoot {
     var c = p.current || null
     var history = p.historyEntries || []
     var acts = p.activities || []
+    var picker = findActivityPicker(p)
     return {
       tag: tag,
       loadState: p.loadState,
@@ -85,6 +104,8 @@ ShellRoot {
       historyCount: history.length,
       showArchived: !!p.showArchived,
       switchPrompt: !!p.switchPrompt,
+      pendingSwitchId: p.pendingSwitchId || "",
+      pickerValue: picker ? picker.value : "",
       storePath: p.storePath
     }
   }
@@ -776,6 +797,203 @@ ShellRoot {
         return
       }
       snapshots.push(snap("restored"))
+      step = 27
+      stepTicks = 0
+      return
+    }
+
+    if (step === 27) {
+      if (!idle())
+        return
+      var picker = findActivityPicker(p)
+      if (!picker) {
+        fail("compact activityPicker not found")
+        return
+      }
+      if (picker.value !== activityId) {
+        fail("picker did not start on A: " + picker.value)
+        return
+      }
+      snapshots.push(snap("picker-start-a"))
+      p.editSummary = "Unsaved A draft before picker cancel"
+      p.dirty = true
+      picker.selectCurrent(activityBId)
+      step = 28
+      stepTicks = 0
+      return
+    }
+
+    if (step === 28) {
+      if (p.busy)
+        return
+      if (!p.switchPrompt) {
+        fail("picker dirty select did not prompt save/discard/cancel")
+        return
+      }
+      if (p.activity.id !== activityId) {
+        fail("picker dirty select switched activities")
+        return
+      }
+      if (p.editSummary !== "Unsaved A draft before picker cancel") {
+        fail("picker dirty select clobbered in-memory A draft")
+        return
+      }
+      snapshots.push(snap("picker-dirty-select"))
+      p.cancelSwitch()
+      if (p.switchPrompt) {
+        fail("cancelSwitch left the picker prompt visible")
+        return
+      }
+      if (p.activity.id !== activityId) {
+        fail("cancelSwitch still switched activities after picker select")
+        return
+      }
+      picker = findActivityPicker(p)
+      if (!picker) {
+        fail("compact activityPicker missing after dirty cancel")
+        return
+      }
+      if (picker.value !== activityId) {
+        fail("picker desync after dirty cancel")
+        return
+      }
+      snapshots.push(snap("picker-after-cancel"))
+      p.editSummary = "Unsaved A draft before failed switch"
+      p.dirty = true
+      picker.selectCurrent(activityBId)
+      step = 29
+      stepTicks = 0
+      return
+    }
+
+    if (step === 29) {
+      if (p.busy)
+        return
+      if (!p.switchPrompt) {
+        fail("failed-switch setup did not prompt")
+        return
+      }
+      if (p.activity.id !== activityId) {
+        fail("failed-switch setup left A")
+        return
+      }
+      revisionBeforeStale = p.revision
+      p.revision = p.revision + 50
+      p.confirmSwitchSave()
+      step = 30
+      stepTicks = 0
+      return
+    }
+
+    if (step === 30) {
+      if (!idle())
+        return
+      if (p.activity.id !== activityId) {
+        fail("stale save-switch left A")
+        return
+      }
+      if (p.editSummary !== "Unsaved A draft before failed switch") {
+        fail("stale save-switch discarded draft")
+        return
+      }
+      if (!p.dirty) {
+        fail("stale save-switch cleared dirty")
+        return
+      }
+      picker = findActivityPicker(p)
+      if (!picker) {
+        fail("compact activityPicker missing after failed switch")
+        return
+      }
+      if (picker.value !== activityId) {
+        fail("picker desync after failed switch")
+        return
+      }
+      snapshots.push(snap("picker-after-failed-switch"))
+      p.cancelSwitch()
+      p.revision = revisionBeforeStale
+      p.dirty = false
+      if (p.current)
+        p.editSummary = p.current.summary
+      picker.selectCurrent(activityBId)
+      step = 31
+      stepTicks = 0
+      return
+    }
+
+    if (step === 31) {
+      if (!idle())
+        return
+      if (p.activity.id !== activityBId) {
+        fail("picker completed switch did not land on B")
+        return
+      }
+      picker = findActivityPicker(p)
+      if (!picker) {
+        fail("compact activityPicker missing after completed switch")
+        return
+      }
+      if (picker.value !== activityBId) {
+        fail("picker desync after completed switch")
+        return
+      }
+      snapshots.push(snap("picker-completed-b"))
+      p.switchActivity(activityId)
+      step = 32
+      stepTicks = 0
+      return
+    }
+
+    if (step === 32) {
+      if (!idle())
+        return
+      if (p.activity.id !== activityId) {
+        fail("JS switch back to A failed")
+        return
+      }
+      picker = findActivityPicker(p)
+      if (!picker) {
+        fail("compact activityPicker missing after later activity change")
+        return
+      }
+      if (picker.value !== activityId) {
+        fail("picker desync after later activity change")
+        return
+      }
+      snapshots.push(snap("picker-follow-a"))
+      p.editSummary = dirtyCreateDraft
+      p.dirty = true
+      p.createName = "Personal"
+      p.createActivity()
+      step = 33
+      stepTicks = 0
+      return
+    }
+
+    if (step === 33) {
+      if (!idle())
+        return
+      if (!p.activity || p.activity.id !== activityId) {
+        fail("create while dirty switched activities")
+        return
+      }
+      if (p.activity.name === "Personal") {
+        fail("create while dirty created Personal")
+        return
+      }
+      if (p.editSummary !== dirtyCreateDraft) {
+        fail("create while dirty discarded the in-memory draft")
+        return
+      }
+      if (!p.dirty) {
+        fail("create while dirty cleared dirty")
+        return
+      }
+      if (!p.lastError) {
+        fail("create while dirty did not explain the refusal")
+        return
+      }
+      snapshots.push(snap("create-while-dirty-refused"))
       succeed()
     }
   }

@@ -18,6 +18,8 @@ Added for #4, still on the actual Panel instance:
 7. Recreate while B is selected; B's editor hydrates.
 8. Archive B and still read its checkpoint; switch back to A without mixing histories.
 9. Restore A's first checkpoint as a **new** revision; original checkpoint id remains.
+10. Compact `activityPicker.selectCurrent` (assignment-before-`changed`, matching installed Dropdown) stays aligned with the current activity after dirty Cancel, failed stale save-switch, completed picker switch, and a later JS activity change.
+11. `createActivity` while dirty refuses with a visible message, stays on A, and keeps the in-memory draft.
 
 These are native evidence. A Python source-contract pass is not a substitute. They are not live bar / real KeyboardPanel layer-shell acceptance.
 
