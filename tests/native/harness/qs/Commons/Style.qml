@@ -19,4 +19,5 @@ QtObject {
     readonly property int body: 12
     readonly property int title: 14
   }
+  readonly property int cornerRadius: 4
 }

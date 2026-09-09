@@ -424,6 +424,57 @@ class TestStore(unittest.TestCase):
         self.assertNotEqual(bad.returncode, 0)
         self.assertEqual(decode(bad)["error"], "validation")
 
+    def test_validate_link_reports_missing_file_without_shell(self) -> None:
+        missing = run_store(
+            self.data_dir,
+            "validate-link",
+            {"kind": "file", "target": "/tmp/breadcrumb-missing-lantern-map.txt"},
+        )
+        self.assertNotEqual(missing.returncode, 0)
+        err = decode(missing)
+        self.assertFalse(err.get("ok"))
+        self.assertEqual(err["error"], "not_found")
+        self.assertIn("missing", err["message"].lower())
+        self.assertNotIn("open_argv", err)
+
+        existing = Path(self.data_dir) / "lantern-notes.txt"
+        existing.write_text("fictional", encoding="utf-8")
+        good = run_store(
+            self.data_dir,
+            "validate-link",
+            {"kind": "file", "target": str(existing)},
+        )
+        self.assertEqual(good.returncode, 0, good.stderr)
+        body = decode(good)
+        self.assertTrue(body.get("ok"), body)
+        self.assertEqual(body["open_argv"], ["xdg-open", "--", str(existing)])
+
+        folder = Path(self.data_dir) / "maps"
+        folder.mkdir()
+        folder_ok = run_store(
+            self.data_dir,
+            "validate-link",
+            {"kind": "folder", "target": str(folder)},
+        )
+        self.assertEqual(folder_ok.returncode, 0, folder_ok.stderr)
+        self.assertEqual(decode(folder_ok)["open_argv"][2], str(folder))
+
+        as_file = run_store(
+            self.data_dir,
+            "validate-link",
+            {"kind": "file", "target": str(folder)},
+        )
+        self.assertNotEqual(as_file.returncode, 0)
+        self.assertEqual(decode(as_file)["error"], "validation")
+
+        shellish = run_store(
+            self.data_dir,
+            "validate-link",
+            {"kind": "file", "target": "/tmp/notes;rm -rf /"},
+        )
+        self.assertNotEqual(shellish.returncode, 0)
+        self.assertEqual(decode(shellish)["error"], "validation")
+
 
 if __name__ == "__main__":
     unittest.main()

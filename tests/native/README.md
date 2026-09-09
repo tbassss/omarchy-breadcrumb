@@ -1,6 +1,9 @@
-# Isolated native harness (issues #3, #4, #5, and #6)
+# Isolated native harness (issues #3, #4, #5, #6, and #7)
 
-Component test: real `Panel.qml` + `/usr/bin/qs` + Qt offscreen. Not full omarchy-shell host integration. Not a live install.
+Component test: real `Panel.qml` + `/usr/bin/qs` + Qt offscreen + packaged
+`qs.Ui`/`qs.Commons` controls copied from `/usr/share/omarchy/shell`.
+KeyboardPanel and host Panel stay stubs (WlrLayershell / live IPC).
+Not full omarchy-shell host integration. Not a live install.
 
 ## What it asserts
 
@@ -17,7 +20,7 @@ Retained from #4, still on the actual Panel instance:
 6. Recreate while a selected activity has state; editor hydrates.
 7. Archive B and still read its checkpoint; switch back to A without mixing histories.
 8. Restore A's first checkpoint as a **new** revision; original checkpoint id remains.
-9. Compact `activityPicker.selectCurrent` (assignment-before-`changed`, matching installed Dropdown) stays aligned with the current activity after completed picker switch and a later JS activity change.
+9. Compact activity picker assignment-then-`changed` (matching installed Dropdown `selectCurrent`) stays aligned with the current activity after completed picker switch and a later JS activity change.
 
 Added for #5:
 
@@ -34,11 +37,21 @@ Added for #6:
 17. While the panel stays **open**, a public `bin/breadcrumb publish` (stdin JSON, required expected revision) refreshes published `current` without Loader recreate or shell restart. In-memory editor text and dirty stay. Conflict UI is shown. Draft base is not adopted from the new revision.
 18. With the panel **closed**, a public publish appears on reopen. In-memory draft is not clobbered. Conflict UI remains.
 
+Added for #7:
+
+19. First-use view is Compact. Recreate after Expand remembers Expanded.
+20. Long published summary stays a bounded Compact glance (`maximumLineCount` geometry); Expanded keeps the full text.
+21. Packaged `qs.Ui.Button` has no `enabled` property; Expand is `focusable: (!root.busy)` and Return toggles the view through packaged `PanelKeyCatcher` (not Expand `forceActiveFocus` bypass).
+22. Missing file Open shows a visible error and does not produce `open_argv`. Safe `https` Open records `xdg-open -- <url>` with `BREADCRUMB_NO_OPEN=1` (no real launch). Fake argv Process tests cover success, nonzero, and start-failure with visible `lastError`. A hanging fake launcher must hit the production 8s `openTimeout`, show the error, and reap the child; no real links are opened.
+23. Narrow expanded width stacks the activity sidebar. Many activities stay inside a capped Flickable. The main expanded column is a height-capped `panelScroller`; stub inflated 1393/1820px screenshots are not acceptance. At actual `360×520`, Tab/Down/Up/j must traverse to real Save, History Restore, and Links Open controls, keep each in the visible viewport, and activate a safe action. Record `contentY`/geometry/screenshots after that traversal; assigning `contentY` or merely proving overflow is not enough.
+24. Packaged `PanelKeyCatcher` + packaged Dropdown: `popupOpen` blocks the catcher so Down/Up/Return/Tab route to the dropdown. Editor `j` must modify field text, not merely leave the view expanded.
+25. Isolated `grabToImage` screenshots of the fictional harness panel only.
+
 These are native evidence. A Python source-contract pass is not a substitute. They are not live bar / real KeyboardPanel layer-shell acceptance. They are not a live installed SSH workflow.
 
 ## Run on the-cave only
 
-Isolated `HOME`/`XDG`, `QT_QPA_PLATFORM=offscreen`, unique `XDG_RUNTIME_DIR`. No Wayland, no live plugin enable, no `shell.json` mutation, no shell restart.
+Isolated `HOME`/`XDG`, `QT_QPA_PLATFORM=offscreen`, unique `XDG_RUNTIME_DIR`. No Wayland, no live plugin enable, no `shell.json` mutation, no shell restart. The runner overlays packaged Omarchy controls and keeps KeyboardPanel/Panel stubs.
 
 ```bash
 ARCHIVE=/path/to/candidate.tar \

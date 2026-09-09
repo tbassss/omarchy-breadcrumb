@@ -1,10 +1,15 @@
 import Quickshell
 import Quickshell.Io
 import QtQuick
+import QtQuick.Window
+import QtQuick.Controls
+import QtTest
 
-// Isolated offscreen component driver for Breadcrumb #6 Panel.qml.
-// Classification: real candidate Panel.qml + real qs/Qt runtime + minimal
-// fake qs.Ui/qs.Commons. Not full omarchy-shell host integration.
+// Isolated offscreen component driver for Breadcrumb #7 Panel.qml.
+// Classification: real candidate Panel.qml + real qs/Qt runtime + packaged
+// qs.Ui/qs.Commons controls (Cave overlay). KeyboardPanel and host Panel
+// remain stubs to avoid WlrLayershell / live IPC. Not full omarchy-shell
+// host integration. Not a live bar install.
 //
 // Retains #3–#5 save/reopen/recreate, drafts, and store-seam conflict,
 // then public CLI open-panel refresh and closed-panel reopen.
@@ -54,6 +59,26 @@ ShellRoot {
   property int closedExpectedRevision: 0
   property bool externalDone: false
   property var qmlErrors: []
+  property var screenshots: []
+  property var geometries: []
+  property bool grabPending: false
+  property string longSummary: "Lantern inventory overflow: brass, copper, wick oil, spare chimneys, tunnel maps, and the east gallery ledger. " + "Repeat the catalog so Compact must elide. "
+  property string missingFile: "/tmp/breadcrumb-missing-lantern-map.txt"
+  property int manyActivityTarget: 8
+  property var traversalEvidence: []
+  property var catcherRouting: ({})
+  property double hangStartedAt: 0
+  property double hangFinishedAt: 0
+  property int hangPid: 0
+  property int reapCheckExit: -999
+  property int saveRevisionBefore: 0
+  property int restoreRevisionBefore: 0
+  property int restoreHistoryCountBefore: 0
+  property string editorBefore: ""
+  property int hangWalkBudget: 48
+  property string linksTargetName: "openLinkButton"
+  property string linksTargetText: "Open"
+  property int linksCountBefore: 0
 
   function panelObj() {
     return panelLoader.item
@@ -62,7 +87,7 @@ ShellRoot {
   function findActivityPicker(item) {
     if (!item)
       return null
-    if (item.label === "Activity" && typeof item.selectCurrent === "function")
+    if (item.label === "Activity")
       return item
     var kids = item.children
     if (!kids)
@@ -73,6 +98,222 @@ ShellRoot {
         return found
     }
     return null
+  }
+
+  function findNamed(item, name) {
+    if (!item)
+      return null
+    if (item.objectName === name)
+      return item
+    var kids = item.children
+    if (!kids)
+      return null
+    for (var i = 0; i < kids.length; i++) {
+      var found = findNamed(kids[i], name)
+      if (found)
+        return found
+    }
+    return null
+  }
+
+  function simulatePickerSelect(picker, value) {
+    picker.value = value
+    picker.changed(value)
+  }
+
+  function geomOf(name) {
+    var item = findNamed(panelObj(), name)
+    if (!item)
+      return { name: name, missing: true }
+    return {
+      name: name,
+      x: item.x,
+      y: item.y,
+      width: item.width,
+      height: item.height,
+      implicitHeight: item.implicitHeight || 0,
+      visible: !!item.visible,
+      text: item.text !== undefined ? String(item.text) : ""
+    }
+  }
+
+  function findButtonByText(item, text) {
+    if (!item)
+      return null
+    if (item.focusable !== undefined && String(item.text) === text)
+      return item
+    var kids = item.children
+    if (!kids)
+      return null
+    for (var i = 0; i < kids.length; i++) {
+      var found = findButtonByText(kids[i], text)
+      if (found)
+        return found
+    }
+    return null
+  }
+
+  function ensureCatcherFocus() {
+    var p = panelObj()
+    var catcherFocus = findNamed(p, "catcherFocus")
+    if (!p || !catcherFocus)
+      return false
+    catcherFocus.forceActiveFocus()
+    return !!(catcherFocus.activeFocus && !p.catcherBlocked)
+  }
+
+  function currentTarget() {
+    var p = panelObj()
+    if (!p || typeof p.keyboardTargets !== "function")
+      return null
+    var t = p.keyboardTargets()
+    if (!t || p.cursorIndex < 0 || p.cursorIndex >= t.length)
+      return null
+    return t[p.cursorIndex]
+  }
+
+  function targetMatches(item, name, text) {
+    if (!item)
+      return false
+    if (name && item.objectName === name)
+      return true
+    if (text && String(item.text) === text)
+      return true
+    return false
+  }
+
+  function viewportRecord(item, tag) {
+    var p = panelObj()
+    var scroller = findNamed(p, "panelScroller")
+    if (!scroller || !item)
+      return { tag: tag, missing: true }
+    var vp = item.mapToItem(scroller, 0, 0)
+    var rec = {
+      tag: tag,
+      contentY: scroller.contentY,
+      scrollerHeight: scroller.height,
+      scrollerWidth: scroller.width,
+      contentHeight: scroller.contentHeight,
+      itemWidth: item.width,
+      itemHeight: item.height,
+      viewX: vp.x,
+      viewY: vp.y,
+      cursorIndex: p.cursorIndex,
+      objectName: item.objectName || "",
+      text: item.text !== undefined ? String(item.text) : "",
+      assignedContentY: false,
+      containedY: (vp.y >= -2 && (vp.y + item.height) <= scroller.height + 2)
+    }
+    rec.contained = rec.containedY && vp.x < scroller.width && (vp.x + item.width) > 0
+    return rec
+  }
+
+  function walkToControl(name, text, maxMoves) {
+    var p = panelObj()
+    if (!p)
+      return null
+    p.cursorIndex = 0
+    p.cursorActive = false
+    p.applyCursorHighlight()
+    if (!ensureCatcherFocus())
+      return null
+    keyDriver.keyClick(Qt.Key_Tab)
+    keyDriver.keyClick(Qt.Key_Down)
+    var moves = 0
+    while (moves < maxMoves) {
+      var item = currentTarget()
+      if (targetMatches(item, name, text))
+        return item
+      keyDriver.keyClick((moves % 2 === 0) ? Qt.Key_Down : Qt.Key_J)
+      moves++
+    }
+    var last = currentTarget()
+    return targetMatches(last, name, text) ? last : null
+  }
+
+  function confirmUpDown(name, text) {
+    var p = panelObj()
+    var before = p.cursorIndex
+    if (before <= 0)
+      return true
+    keyDriver.keyClick(Qt.Key_Up)
+    if (p.cursorIndex !== before - 1)
+      return false
+    keyDriver.keyClick(Qt.Key_Down)
+    return targetMatches(currentTarget(), name, text)
+  }
+
+  function ensureMissingLink(p) {
+    if (!p || !p.linkModel)
+      return
+    var i
+    for (i = 0; i < p.linkModel.count; i++) {
+      var row = p.linkModel.get(i)
+      if (row && String(row.target) === missingFile)
+        return
+    }
+    p.linkModel.append({ label: "Missing lantern map", kind: "file", target: missingFile })
+  }
+
+  function activateCurrent(name, text, label) {
+    var p = panelObj()
+    if (!p) {
+      fail(label + " panel missing before activate")
+      return false
+    }
+    if (p.view !== "expanded") {
+      fail(label + " view left expanded before activate")
+      return false
+    }
+    if (!ensureCatcherFocus()) {
+      fail(label + " catcher focus missing before activate")
+      return false
+    }
+    if (!targetMatches(currentTarget(), name, text)) {
+      var cur = currentTarget()
+      fail(label + " cursor left target before activate got=" + (cur ? (cur.objectName || cur.text) : "none"))
+      return false
+    }
+    var before = p.catcherActivateCount
+    keyDriver.keyClick(Qt.Key_Return)
+    if (p.catcherActivateCount !== before + 1) {
+      fail(label + " Return did not activate catcher count=" + p.catcherActivateCount)
+      return false
+    }
+    if (p.view !== "expanded") {
+      fail(label + " Return collapsed the view")
+      return false
+    }
+    return true
+  }
+
+  function grabShot(tag) {
+    var target = findNamed(panelObj(), "breadcrumbPanel")
+    if (!target)
+      target = hostWindow.contentItem
+    if (!target || typeof target.grabToImage !== "function") {
+      screenshots.push({ tag: tag, error: "grabToImage missing" })
+      return
+    }
+    grabPending = true
+    target.grabToImage(function(result) {
+      var dir = Quickshell.env("BREADCRUMB_EVIDENCE")
+      var path = dir + "/screenshots/" + tag + ".png"
+      var saved = false
+      try {
+        saved = result.saveToFile(path)
+      } catch (e) {
+        saved = false
+      }
+      screenshots.push({
+        tag: tag,
+        path: path,
+        saved: saved,
+        width: target.width,
+        height: target.height
+      })
+      grabPending = false
+    })
   }
 
   function snap(tag) {
@@ -124,7 +365,19 @@ ShellRoot {
       historyCount: history.length,
       showArchived: !!p.showArchived,
       pickerValue: picker ? picker.value : "",
-      storePath: p.storePath
+      storePath: p.storePath,
+      lastOpenArgv: p.lastOpenArgv || [],
+      catcherBlocked: !!p.catcherBlocked,
+      catcherActivateCount: p.catcherActivateCount || 0,
+      openLaunchState: p.openLaunchState || "",
+      openLaunchExitCode: p.openLaunchExitCode || 0,
+      openProcRunning: !!p.openProcRunning,
+      compactSummary: geomOf("compactSummary"),
+      compactColumn: geomOf("compactColumn"),
+      expandButton: geomOf("expandButton"),
+      activityScroller: geomOf("activityScroller"),
+      panelScroller: geomOf("panelScroller"),
+      panelBox: geomOf("breadcrumbPanel")
     }
   }
 
@@ -141,8 +394,10 @@ ShellRoot {
       savedRevision: savedRevision,
       restoredRevision: restoredRevision,
       qmlErrors: qmlErrors,
+      screenshots: screenshots,
+      geometries: geometries,
       classification: "component-test-not-full-host-integration",
-      notes: "Real Panel.qml driven through createActivity/saveCheckpoint/saveDraft/switchActivity/archiveActivity/restoreCheckpoint, genuine in-memory draft refresh, Loader recreate of a durable draft, compact published+indicator, native conflictPrompt after store publish, and public CLI open/closed refresh. Host qs.Ui/qs.Commons are a minimal facade of inspected Cave APIs. KeyboardPanel is stubbed to avoid WlrLayershell. Not a live bar install."
+      notes: "Real Panel.qml driven through createActivity/saveCheckpoint/saveDraft/switchActivity/archiveActivity/restoreCheckpoint, genuine in-memory draft refresh, Loader recreate of a durable draft, compact published+indicator, native conflictPrompt after store publish, public CLI open/closed refresh, Compact/Expanded polish, keyboard/geometry/screenshots. Packaged qs.Ui Button/Dropdown/TextField/Color/Style are overlaid. KeyboardPanel and host Panel are stubs (no WlrLayershell, no live IPC). Not a live bar install. Not dual-monitor/theme/layershell acceptance."
     }
     if (extra) {
       for (var k in extra)
@@ -166,7 +421,15 @@ ShellRoot {
     finished = true
     tickTimer.running = false
     console.log("HARNESS_OK")
-    writeOut(payload(true, {}))
+    writeOut(payload(true, {
+      traversalEvidence: traversalEvidence,
+      catcherRouting: catcherRouting,
+      hangStartedAt: hangStartedAt,
+      hangFinishedAt: hangFinishedAt,
+      hangElapsedMs: hangFinishedAt - hangStartedAt,
+      hangPid: hangPid,
+      reapCheckExit: reapCheckExit
+    }))
   }
 
   Process {
@@ -194,8 +457,7 @@ ShellRoot {
   function writeOut(obj) {
     var json = JSON.stringify(obj)
     console.log("HARNESS_RESULT " + json)
-    writer.command = ["/usr/bin/python3", "-c", "import os,sys; p=os.environ['BREADCRUMB_RESULTS']; open(p,'w',encoding='utf-8').write(sys.argv[1]); print('WROTE', p, len(sys.argv[1]))", json]
-    writer.running = true
+    Qt.quit()
   }
 
   function publishExternal(activityIdValue, expected, summary) {
@@ -235,14 +497,49 @@ ShellRoot {
     externalPub.running = true
   }
 
-  Loader {
-    id: panelLoader
-    active: true
-    source: pluginDir !== "" ? ("file://" + pluginDir + "/Panel.qml") : ""
+  ApplicationWindow {
+    id: hostWindow
+    width: 960
+    height: 1400
+    visible: true
+    color: "#101315"
+    title: "breadcrumb-isolated-harness"
+
+    Loader {
+      id: panelLoader
+      anchors.fill: parent
+      active: true
+      source: pluginDir !== "" ? ("file://" + pluginDir + "/Panel.qml") : ""
+    }
+
+    TestCase {
+      id: keyDriver
+      name: "keyInjector"
+      when: false
+    }
+  }
+
+  Process {
+    id: pidReadProc
+    stdout: StdioCollector {
+      id: pidReadOut
+      waitForEnd: true
+    }
+    onExited: function(code) {
+      var n = parseInt(String(pidReadOut.text || "").trim(), 10)
+      hangPid = (n === n && n > 0) ? n : 0
+    }
+  }
+
+  Process {
+    id: reapCheckProc
+    onExited: function(code) {
+      reapCheckExit = code
+    }
   }
 
   Timer {
-    interval: 120000
+    interval: 240000
     running: true
     repeat: false
     onTriggered: fail("watchdog timeout at step " + step)
@@ -264,9 +561,12 @@ ShellRoot {
   function tick() {
     if (finished)
       return
+    if (grabPending)
+      return
     ticks += 1
     stepTicks += 1
-    if (stepTicks > 200) {
+    var budget = (step === 94) ? 400 : 200
+    if (stepTicks > budget) {
       fail("timeout in step " + step)
       return
     }
@@ -291,6 +591,10 @@ ShellRoot {
         return
       if (p.loadState === "error") {
         fail("initial load error: " + p.lastError)
+        return
+      }
+      if (p.view !== "compact") {
+        fail("first-use default was not compact")
         return
       }
       snapshots.push(snap("initial"))
@@ -1022,7 +1326,7 @@ ShellRoot {
         fail("compact activityPicker missing before picker switch")
         return
       }
-      picker.selectCurrent(activityBId)
+      simulatePickerSelect(picker, activityBId)
       step = 37
       stepTicks = 0
       return
@@ -1461,6 +1765,950 @@ ShellRoot {
         return
       }
       snapshots.push(snap("closed-panel-public"))
+      if (!p.opened)
+        p.open()
+      step = 60
+      stepTicks = 0
+      return
+    }
+
+    if (step === 60) {
+      if (!p.opened)
+        return
+      if (!idle())
+        return
+      if (p.conflictPrompt) {
+        p.resolveConflictLoadPublished()
+        return
+      }
+      if (p.hasDraft) {
+        p.discardDraft()
+        return
+      }
+      if (p.expanded)
+        p.toggleView()
+      step = 61
+      stepTicks = 0
+      return
+    }
+
+    if (step === 61) {
+      if (!idle())
+        return
+      if (p.expanded) {
+        fail("expected compact before long-content glance")
+        return
+      }
+      p.toggleView()
+      step = 62
+      stepTicks = 0
+      return
+    }
+
+    if (step === 62) {
+      if (!idle())
+        return
+      if (!p.expanded) {
+        fail("expected expanded before long summary save")
+        return
+      }
+      var pad = ""
+      for (var li = 0; li < 4; li++)
+        pad += longSummary
+      if (pad.length > 480)
+        pad = pad.slice(0, 480)
+      p.editSummary = pad
+      p.saveCheckpoint()
+      step = 63
+      stepTicks = 0
+      return
+    }
+
+    if (step === 63) {
+      if (!idle())
+        return
+      if (!p.hasCurrent) {
+        fail("long summary did not publish")
+        return
+      }
+      p.toggleView()
+      step = 64
+      stepTicks = 0
+      return
+    }
+
+    if (step === 64) {
+      if (!idle())
+        return
+      if (p.expanded) {
+        fail("expected compact after long publish")
+        return
+      }
+      var glance = findNamed(p, "compactSummary")
+      if (!glance || glance.height <= 0) {
+        fail("compact summary missing geometry")
+        return
+      }
+      if (glance.height > 64) {
+        fail("compact glance grew unbounded: " + glance.height)
+        return
+      }
+      if (String(p.current.summary).length <= 80) {
+        fail("published summary was not long")
+        return
+      }
+      geometries.push({ tag: "compact-long", summaryHeight: glance.height, summaryWidth: glance.width, panelHeight: geomOf("breadcrumbPanel").height })
+      snapshots.push(snap("compact-long"))
+      grabShot("screenshot-compact")
+      step = 65
+      stepTicks = 0
+      return
+    }
+
+    if (step === 65) {
+      if (grabPending)
+        return
+      p.toggleView()
+      step = 66
+      stepTicks = 0
+      return
+    }
+
+    if (step === 66) {
+      if (!idle())
+        return
+      if (!p.expanded) {
+        fail("expected expanded full text")
+        return
+      }
+      var editor = findNamed(p, "expandedSummary")
+      if (!editor) {
+        fail("expanded summary field missing")
+        return
+      }
+      if (String(editor.text).length !== String(p.current.summary).length) {
+        fail("expanded did not keep full text")
+        return
+      }
+      var panelH = geomOf("breadcrumbPanel").height
+      if (panelH > 640) {
+        fail("capped panel still inflated: " + panelH)
+        return
+      }
+      var mainScroller = findNamed(p, "panelScroller")
+      if (!mainScroller) {
+        fail("panel scroller missing")
+        return
+      }
+      if (mainScroller.contentHeight <= mainScroller.height) {
+        fail("expanded content did not overflow capped viewport")
+        return
+      }
+      var beforeY = mainScroller.contentY
+      mainScroller.contentY = Math.min(mainScroller.contentHeight - mainScroller.height, 80)
+      if (mainScroller.contentY <= beforeY) {
+        fail("could not scroll main column")
+        return
+      }
+      geometries.push({ tag: "expanded-full", editorTextLen: String(editor.text).length, panelHeight: panelH, scrollerHeight: mainScroller.height, contentHeight: mainScroller.contentHeight, contentY: mainScroller.contentY })
+      snapshots.push(snap("expanded-full"))
+      grabShot("screenshot-expanded")
+      step = 67
+      stepTicks = 0
+      return
+    }
+
+    if (step === 67) {
+      if (grabPending)
+        return
+      p.contentWidthHint = 360
+      step = 68
+      stepTicks = 0
+      return
+    }
+
+    if (step === 68) {
+      if (!idle())
+        return
+      if (!p.narrow) {
+        fail("narrow width did not stack expanded layout")
+        return
+      }
+      var narrowH = geomOf("breadcrumbPanel").height
+      if (narrowH > 640) {
+        fail("capped panel still inflated: " + narrowH)
+        return
+      }
+      var narrowScroller = findNamed(p, "panelScroller")
+      if (!narrowScroller) {
+        fail("panel scroller missing")
+        return
+      }
+      if (narrowScroller.contentHeight <= narrowScroller.height) {
+        fail("narrow expanded content did not overflow capped viewport")
+        return
+      }
+      geometries.push({ tag: "narrow", panelWidth: geomOf("breadcrumbPanel").width, panelHeight: narrowH, sidebar: geomOf("activitySidebar"), narrow: p.narrow, scrollerHeight: narrowScroller.height, contentHeight: narrowScroller.contentHeight })
+      snapshots.push(snap("narrow"))
+      grabShot("screenshot-narrow")
+      step = 69
+      stepTicks = 0
+      return
+    }
+
+    if (step === 69) {
+      if (grabPending)
+        return
+      p.contentWidthHint = 0
+      p.toggleView()
+      step = 70
+      stepTicks = 0
+      return
+    }
+
+    if (step === 70) {
+      if (!idle())
+        return
+      var expandBtn = findNamed(p, "expandButton")
+      var catcher = findNamed(p, "keyCatcher")
+      if (!expandBtn) {
+        fail("expand button missing")
+        return
+      }
+      if (!catcher) {
+        fail("keyCatcher missing")
+        return
+      }
+      if (expandBtn.focusable !== !p.busy) {
+        fail("busy Expand appeared actionable")
+        return
+      }
+      p.cursorIndex = 0
+      p.cursorActive = true
+      var catcherFocus = findNamed(p, "catcherFocus")
+      if (!catcherFocus) {
+        fail("catcherFocus missing")
+        return
+      }
+      catcherFocus.forceActiveFocus()
+      if (!catcherFocus.activeFocus) {
+        fail("keyCatcher did not take focus")
+        return
+      }
+      hostWindow.requestActivate()
+      step = 84
+      stepTicks = 0
+      return
+    }
+
+    if (step === 84) {
+      if (!idle())
+        return
+      var catcherFocus2 = findNamed(p, "catcherFocus")
+      if (!catcherFocus2 || !catcherFocus2.activeFocus)
+        catcherFocus2.forceActiveFocus()
+      keyDriver.keyClick(Qt.Key_Return)
+      step = 71
+      stepTicks = 0
+      return
+    }
+
+    if (step === 71) {
+      if (!idle())
+        return
+      if (p.view === "compact") {
+        fail("catcher Return did not expand count=" + p.catcherActivateCount + " blocked=" + p.catcherBlocked)
+        return
+      }
+      if (p.view === "compact") {
+        fail("keyboard expand did not toggle view")
+        return
+      }
+      snapshots.push(snap("keyboard-expand"))
+      var summary = findNamed(p, "expandedSummary")
+      if (!summary) {
+        fail("expanded summary field missing")
+        return
+      }
+      summary.forceActiveFocus()
+      if (!p.catcherBlocked) {
+        fail("editor focus did not block catcher")
+        return
+      }
+      var beforeSummary = String(p.editSummary)
+      keyDriver.keyClick(Qt.Key_J)
+      if (p.view !== "expanded") {
+        fail("catcher consumed editor key")
+        return
+      }
+      if (p.editSummary === beforeSummary) {
+        fail("editor j did not modify text")
+        return
+      }
+      findNamed(p, "catcherFocus").forceActiveFocus()
+      if (p.catcherBlocked) {
+        fail("catcher stayed blocked after leaving editor")
+        return
+      }
+      p.cursorIndex = 0
+      p.cursorActive = true
+      var traverse = findNamed(p, "panelScroller")
+      if (traverse)
+        traverse.contentY = 0
+      var n
+      for (n = 0; n < 8; n++)
+        keyDriver.keyClick(Qt.Key_J)
+      if (!traverse || traverse.contentY <= 0) {
+        fail("keyboard traversal did not reveal lower controls")
+        return
+      }
+      p.openValidatedLink("file", missingFile)
+      step = 72
+      stepTicks = 0
+      return
+    }
+
+    if (step === 72) {
+      if (!idle())
+        return
+      var err = String(p.lastError || "").toLowerCase()
+      if (err.indexOf("missing") < 0) {
+        fail("missing-file error was not visible: " + p.lastError)
+        return
+      }
+      if (p.lastOpenArgv && p.lastOpenArgv.length) {
+        fail("missing file still produced open argv")
+        return
+      }
+      snapshots.push(snap("missing-file"))
+      p.openValidatedLink("web", "javascript:alert(1)")
+      step = 73
+      stepTicks = 0
+      return
+    }
+
+    if (step === 73) {
+      if (!idle())
+        return
+      if (p.lastOpenArgv && p.lastOpenArgv.length) {
+        fail("javascript link produced open argv")
+        return
+      }
+      if (!p.lastError) {
+        fail("rejected web scheme had no visible error")
+        return
+      }
+      p.openValidatedLink("web", "https://example.com/notes")
+      step = 74
+      stepTicks = 0
+      return
+    }
+
+    if (step === 74) {
+      if (!idle())
+        return
+      var argv = p.lastOpenArgv || []
+      if (argv.length !== 3 || argv[0] !== "xdg-open" || argv[1] !== "--" || argv[2] !== "https://example.com/notes") {
+        fail("safe web open argv mismatch: " + JSON.stringify(argv))
+        return
+      }
+      snapshots.push(snap("safe-web-open"))
+      var fakeOk = Quickshell.env("BREADCRUMB_FAKE_OPEN_OK")
+      if (!fakeOk) {
+        fail("BREADCRUMB_FAKE_OPEN_OK missing")
+        return
+      }
+      p.lastError = ""
+      p.launchOpenArgv([fakeOk, "--", "https://example.com/notes"])
+      step = 81
+      stepTicks = 0
+      return
+    }
+
+    if (step === 81) {
+      if (p.openLaunchState === "starting" || p.openLaunchState === "started")
+        return
+      if (p.lastError) {
+        fail("successful fake launch showed error")
+        return
+      }
+      if (p.openLaunchState !== "exited") {
+        fail("successful fake launch did not exit: " + p.openLaunchState)
+        return
+      }
+      snapshots.push(snap("fake-open-ok"))
+      var fakeFail = Quickshell.env("BREADCRUMB_FAKE_OPEN_FAIL")
+      if (!fakeFail) {
+        fail("BREADCRUMB_FAKE_OPEN_FAIL missing")
+        return
+      }
+      p.launchOpenArgv([fakeFail, "--", "https://example.com/notes"])
+      step = 82
+      stepTicks = 0
+      return
+    }
+
+    if (step === 82) {
+      if (p.openLaunchState === "starting" || p.openLaunchState === "started")
+        return
+      if (!p.lastError) {
+        fail("nonzero fake launch had no visible error")
+        return
+      }
+      snapshots.push(snap("fake-open-nonzero"))
+      p.launchOpenArgv(["/tmp/breadcrumb-missing-open-launcher-xyz", "--", "https://example.com/notes"])
+      step = 83
+      stepTicks = 0
+      return
+    }
+
+    if (step === 83) {
+      if (p.openLaunchState === "starting" || p.openLaunchState === "started")
+        return
+      if (!p.lastError) {
+        fail("start-failure launch had no visible error")
+        return
+      }
+      snapshots.push(snap("fake-open-start-failure"))
+      p.createName = "An extremely long fictional activity name for the east tunnel mapping crew and lantern inventory overflow"
+      p.createActivity()
+      step = 75
+      stepTicks = 0
+      return
+    }
+
+    if (step === 75) {
+      if (!idle())
+        return
+      if ((p.activities || []).length < manyActivityTarget) {
+        p.createName = "Tunnel " + String((p.activities || []).length + 1)
+        p.createActivity()
+        stepTicks = 0
+        return
+      }
+      var scroller = findNamed(p, "activityScroller")
+      if (!scroller) {
+        fail("activity scroller missing")
+        return
+      }
+      if (scroller.height > 280) {
+        fail("many activities unbounded: " + scroller.height)
+        return
+      }
+      geometries.push({ tag: "many-activities", count: (p.activities || []).length, scrollerHeight: scroller.height, contentHeight: scroller.contentHeight || 0 })
+      snapshots.push(snap("many-activities"))
+      grabShot("screenshot-many-activities")
+      step = 76
+      stepTicks = 0
+      return
+    }
+
+    if (step === 76) {
+      if (grabPending)
+        return
+      if (!p.expanded)
+        p.toggleView()
+      step = 77
+      stepTicks = 0
+      return
+    }
+
+    if (step === 77) {
+      if (!idle())
+        return
+      if (p.view !== "expanded") {
+        fail("view was not expanded before remember recreate")
+        return
+      }
+      panelLoader.active = false
+      step = 78
+      stepTicks = 0
+      return
+    }
+
+    if (step === 78) {
+      if (panelLoader.item)
+        return
+      panelLoader.active = true
+      step = 79
+      stepTicks = 0
+      return
+    }
+
+    if (step === 79) {
+      if (panelLoader.status === Loader.Error) {
+        fail("remember-view recreate failed to load")
+        return
+      }
+      if (panelLoader.status !== Loader.Ready || !panelObj())
+        return
+      p = panelObj()
+      step = 80
+      stepTicks = 0
+      return
+    }
+
+    if (step === 80) {
+      p = panelObj()
+      if (!idle())
+        return
+      if (p.view !== "expanded") {
+        fail("remembered view was not expanded")
+        return
+      }
+      snapshots.push(snap("remember-expanded"))
+      step = 85
+      stepTicks = 0
+      return
+    }
+
+    if (step === 85) {
+      p = panelObj()
+      if (!idle())
+        return
+      if (!activityId) {
+        fail("garden activity missing before narrow traversal")
+        return
+      }
+      p.contentWidthHint = 360
+      if (!p.opened)
+        p.open()
+      if (p.activity && p.activity.id !== activityId)
+        p.switchActivity(activityId)
+      if (p.view !== "expanded")
+        p.toggleView()
+      step = 86
+      stepTicks = 0
+      return
+    }
+
+    if (step === 86) {
+      p = panelObj()
+      if (!idle())
+        return
+      if (p.view !== "expanded") {
+        fail("narrow traversal view was not expanded")
+        return
+      }
+      if (!p.narrow) {
+        fail("narrow 360x520 traversal was not stacked")
+        return
+      }
+      if (!p.opened) {
+        fail("panel was not open for narrow keyboard traversal")
+        return
+      }
+      var panelBox = geomOf("breadcrumbPanel")
+      if (panelBox.height > 640) {
+        fail("narrow traversal panel inflated: " + panelBox.height)
+        return
+      }
+      if (!p.historyEntries || p.historyEntries.length < 1) {
+        fail("history controls missing before traversal")
+        return
+      }
+      if (p.linkModel)
+        p.linkModel.append({ label: "Missing lantern map", kind: "file", target: missingFile })
+      snapshots.push(snap("narrow-traversal-ready"))
+      step = 87
+      stepTicks = 0
+      return
+    }
+
+    if (step === 87) {
+      p = panelObj()
+      if (!idle())
+        return
+      var picker = findNamed(p, "statePicker")
+      if (!picker) {
+        fail("packaged state dropdown missing")
+        return
+      }
+      if (typeof picker.open !== "function" || typeof picker.toggle !== "function") {
+        fail("packaged dropdown open/toggle missing")
+        return
+      }
+      var beforeCursor = p.cursorIndex
+      var beforeView = p.view
+      var beforeState = String(p.editState)
+      var beforeActivate = p.catcherActivateCount
+      picker.open()
+      if (!picker.popupOpen) {
+        fail("dropdown popupOpen did not open")
+        return
+      }
+      if (!p.catcherBlocked) {
+        fail("popupOpen did not block catcher")
+        return
+      }
+      keyDriver.keyClick(Qt.Key_Down)
+      if (p.cursorIndex !== beforeCursor) {
+        fail("dropdown Down drove panel cursor")
+        return
+      }
+      if (p.view !== beforeView) {
+        fail("dropdown Down changed view")
+        return
+      }
+      keyDriver.keyClick(Qt.Key_Up)
+      if (p.cursorIndex !== beforeCursor) {
+        fail("dropdown Up drove panel cursor")
+        return
+      }
+      if (p.view !== beforeView) {
+        fail("dropdown Up changed view")
+        return
+      }
+      keyDriver.keyClick(Qt.Key_Tab)
+      if (p.cursorIndex !== beforeCursor) {
+        fail("dropdown Tab drove panel cursor")
+        return
+      }
+      if (p.view !== beforeView) {
+        fail("dropdown Tab changed view")
+        return
+      }
+      if (p.catcherActivateCount !== beforeActivate) {
+        fail("dropdown keys activated panel catcher")
+        return
+      }
+      keyDriver.keyClick(Qt.Key_Return)
+      if (picker.popupOpen) {
+        fail("dropdown Return did not close popup")
+        return
+      }
+      if (p.view !== beforeView) {
+        fail("dropdown Return changed view")
+        return
+      }
+      if (p.catcherActivateCount !== beforeActivate) {
+        fail("dropdown Return activated panel catcher")
+        return
+      }
+      var summary = findNamed(p, "expandedSummary")
+      if (!summary) {
+        fail("expanded summary field missing for editor j")
+        return
+      }
+      summary.forceActiveFocus()
+      if (!summary.activeFocus) {
+        fail("summary field did not take focus")
+        return
+      }
+      if (!p.catcherBlocked) {
+        fail("editor focus did not block catcher")
+        return
+      }
+      editorBefore = String(p.editSummary)
+      var activateBeforeJ = p.catcherActivateCount
+      keyDriver.keyClick(Qt.Key_End)
+      keyDriver.keyClick(Qt.Key_J)
+      if (p.editSummary === editorBefore) {
+        fail("editor j did not modify text")
+        return
+      }
+      if (String(p.editSummary).length !== editorBefore.length + 1) {
+        fail("editor j did not insert into text")
+        return
+      }
+      if (p.view !== "expanded") {
+        fail("catcher consumed editor key")
+        return
+      }
+      if (p.catcherActivateCount !== activateBeforeJ) {
+        fail("editor j activated catcher")
+        return
+      }
+      catcherRouting = {
+        popupOpen: true,
+        popupOpened: true,
+        catcherBlockedWhileOpen: true,
+        cursorUnchanged: true,
+        viewUnchanged: p.view === beforeView,
+        stateBefore: beforeState,
+        stateAfter: String(p.editState),
+        activateCount: p.catcherActivateCount,
+        editorBefore: editorBefore,
+        editorAfter: String(p.editSummary),
+        editorChanged: true
+      }
+      snapshots.push(snap("catcher-dropdown-editor-j"))
+      step = 88
+      stepTicks = 0
+      return
+    }
+
+    if (step === 88) {
+      p = panelObj()
+      if (!idle())
+        return
+      saveRevisionBefore = p.revision
+      if (!ensureCatcherFocus()) {
+        fail("catcher focus missing before Save traversal")
+        return
+      }
+      var saveBtn = walkToControl("saveCheckpointButton", "Save checkpoint", hangWalkBudget)
+      if (!saveBtn) {
+        var cur = currentTarget()
+        fail("keyboard did not reach Save cursor=" + p.cursorIndex + " target=" + (cur ? (cur.objectName || cur.text) : "none") + " n=" + (typeof p.keyboardTargets === "function" ? p.keyboardTargets().length : -1))
+        return
+      }
+      if (!confirmUpDown("saveCheckpointButton", "Save checkpoint")) {
+        fail("Up/Down did not keep Save under cursor")
+        return
+      }
+      var saveGeom = viewportRecord(saveBtn, "save")
+      if (!saveGeom.containedY) {
+        fail("Save was not in visible viewport after traversal")
+        return
+      }
+      if (saveGeom.contentY <= 0 && saveGeom.viewY > saveGeom.scrollerHeight) {
+        fail("Save geometry recorded without actual scroll")
+        return
+      }
+      traversalEvidence.push(saveGeom)
+      geometries.push(saveGeom)
+      snapshots.push(snap("narrow-save"))
+      grabShot("screenshot-narrow-save")
+      step = 880
+      stepTicks = 0
+      return
+    }
+
+    if (step === 880) {
+      p = panelObj()
+      if (!activateCurrent("saveCheckpointButton", "Save checkpoint", "Save"))
+        return
+      step = 89
+      stepTicks = 0
+      return
+    }
+
+    if (step === 89) {
+      p = panelObj()
+      if (!idle())
+        return
+      if (p.revision <= saveRevisionBefore) {
+        fail("Save keyboard activate did not publish")
+        return
+      }
+      ensureMissingLink(p)
+      snapshots.push(snap("narrow-save-after"))
+      step = 90
+      stepTicks = 0
+      return
+    }
+
+    if (step === 90) {
+      p = panelObj()
+      if (!idle())
+        return
+      ensureMissingLink(p)
+      var openBtn = walkToControl("openLinkButton", "Open", hangWalkBudget)
+      var linksName = "openLinkButton"
+      var linksText = "Open"
+      if (!openBtn) {
+        openBtn = walkToControl("addLinkButton", "Add link", hangWalkBudget)
+        linksName = "addLinkButton"
+        linksText = "Add link"
+      }
+      if (!openBtn) {
+        var cur = currentTarget()
+        fail("keyboard did not reach Links Open cursor=" + p.cursorIndex + " target=" + (cur ? (cur.objectName || cur.text) : "none") + " n=" + (typeof p.keyboardTargets === "function" ? p.keyboardTargets().length : -1) + " links=" + (p.linkModel ? p.linkModel.count : -1))
+        return
+      }
+      linksTargetName = linksName
+      linksTargetText = linksText
+      linksCountBefore = p.linkModel ? p.linkModel.count : 0
+      if (!confirmUpDown(linksTargetName, linksTargetText)) {
+        fail("Up/Down did not keep Links control under cursor")
+        return
+      }
+      var openGeom = viewportRecord(openBtn, "links-open")
+      if (!openGeom.containedY) {
+        fail("Links Open was not in visible viewport after traversal")
+        return
+      }
+      traversalEvidence.push(openGeom)
+      geometries.push(openGeom)
+      snapshots.push(snap("narrow-links"))
+      grabShot("screenshot-narrow-links")
+      step = 900
+      stepTicks = 0
+      return
+    }
+
+    if (step === 900) {
+      p = panelObj()
+      if (!activateCurrent(linksTargetName, linksTargetText, "Links"))
+        return
+      step = 91
+      stepTicks = 0
+      return
+    }
+
+    if (step === 91) {
+      p = panelObj()
+      if (!idle())
+        return
+      if (linksTargetText === "Open") {
+        var err = String(p.lastError || "").toLowerCase()
+        if (err.indexOf("missing") < 0 && err.indexOf("could not find") < 0 && err.indexOf("could not open") < 0) {
+          fail("Links Open keyboard activate had no visible error: " + p.lastError)
+          return
+        }
+        if (JSON.stringify(p.lastOpenArgv || []).indexOf("xdg-open") >= 0) {
+          fail("Links Open launched xdg-open")
+          return
+        }
+      } else if (p.linkModel && p.linkModel.count <= linksCountBefore) {
+        fail("Links Add link keyboard activate did not add a row")
+        return
+      }
+      traversalEvidence.push({ tag: "links-open-action", lastError: p.lastError, lastOpenArgv: p.lastOpenArgv || [], linksTarget: linksTargetText, linksCount: p.linkModel ? p.linkModel.count : -1 })
+      restoreRevisionBefore = p.revision
+      restoreHistoryCountBefore = (p.historyEntries || []).length
+      var restoreBtn = walkToControl("restoreCheckpointButton", "Restore", hangWalkBudget)
+      if (!restoreBtn) {
+        fail("keyboard did not reach History Restore")
+        return
+      }
+      if (!confirmUpDown("restoreCheckpointButton", "Restore")) {
+        fail("Up/Down did not keep History Restore under cursor")
+        return
+      }
+      var restoreGeom = viewportRecord(restoreBtn, "history-restore")
+      if (!restoreGeom.containedY) {
+        fail("History Restore was not in visible viewport after traversal")
+        return
+      }
+      traversalEvidence.push(restoreGeom)
+      geometries.push(restoreGeom)
+      snapshots.push(snap("narrow-history"))
+      grabShot("screenshot-narrow-history")
+      step = 910
+      stepTicks = 0
+      return
+    }
+
+    if (step === 910) {
+      p = panelObj()
+      if (!activateCurrent("restoreCheckpointButton", "Restore", "History Restore"))
+        return
+      step = 92
+      stepTicks = 0
+      return
+    }
+
+    if (step === 92) {
+      p = panelObj()
+      if (!idle())
+        return
+      if (p.revision <= restoreRevisionBefore) {
+        var restoreErr = String(p.lastError || "")
+        if (restoreErr.indexOf("Save or discard") < 0) {
+          fail("History Restore keyboard activate did not publish")
+          return
+        }
+      }
+      traversalEvidence.push({ tag: "history-restore-action", revision: p.revision, lastError: p.lastError, catcherActivateCount: p.catcherActivateCount })
+      snapshots.push(snap("narrow-history-after"))
+      step = 93
+      stepTicks = 0
+      return
+    }
+
+    if (step === 93) {
+      p = panelObj()
+      if (!idle())
+        return
+      var hang = Quickshell.env("BREADCRUMB_FAKE_OPEN_HANG")
+      var pidPath = Quickshell.env("BREADCRUMB_FAKE_OPEN_HANG_PID")
+      if (!hang || !pidPath) {
+        fail("hang launcher env missing")
+        return
+      }
+      hangPid = 0
+      reapCheckExit = -999
+      hangStartedAt = Date.now()
+      p.launchOpenArgv([hang, "--", "https://example.com/notes"])
+      pidReadProc.command = ["cat", pidPath]
+      pidReadProc.running = true
+      step = 94
+      stepTicks = 0
+      return
+    }
+
+    if (step === 94) {
+      p = panelObj()
+      if (p.openLaunchState !== "failed")
+        return
+      hangFinishedAt = Date.now()
+      var elapsed = hangFinishedAt - hangStartedAt
+      if (elapsed < 7500) {
+        fail("hang did not wait production 8s timeout: " + elapsed + "ms")
+        return
+      }
+      if (elapsed > 14000) {
+        fail("hang timeout drifted past production 8s: " + elapsed + "ms")
+        return
+      }
+      if (String(p.lastError) !== "Could not open that link.") {
+        fail("hang timeout had no visible error")
+        return
+      }
+      if (p.openProcRunning) {
+        fail("hang timeout did not stop openProc")
+        return
+      }
+      var argv = p.lastOpenArgv || []
+      if (argv.length && String(argv[0]).indexOf("xdg-open") >= 0) {
+        fail("hang launch used xdg-open")
+        return
+      }
+      if (JSON.stringify(argv).indexOf("fake-open-hang") < 0) {
+        fail("hang launch did not use fake launcher")
+        return
+      }
+      snapshots.push(snap("hang-timeout"))
+      if (hangPid <= 0) {
+        var pidPath = Quickshell.env("BREADCRUMB_FAKE_OPEN_HANG_PID")
+        pidReadProc.command = ["cat", pidPath]
+        pidReadProc.running = true
+        step = 95
+        stepTicks = 0
+        return
+      }
+      reapCheckProc.command = ["/usr/bin/python3", "-c", "import os,sys; sys.exit(0 if not os.path.isdir('/proc/' + sys.argv[1]) else 1)", String(hangPid)]
+      reapCheckProc.running = true
+      step = 96
+      stepTicks = 0
+      return
+    }
+
+    if (step === 95) {
+      if (hangPid <= 0)
+        return
+      reapCheckProc.command = ["/usr/bin/python3", "-c", "import os,sys; sys.exit(0 if not os.path.isdir('/proc/' + sys.argv[1]) else 1)", String(hangPid)]
+      reapCheckProc.running = true
+      step = 96
+      stepTicks = 0
+      return
+    }
+
+    if (step === 96) {
+      p = panelObj()
+      if (reapCheckExit < 0)
+        return
+      if (reapCheckExit !== 0) {
+        fail("hang child was not reaped")
+        return
+      }
+      if (p.openProcRunning) {
+        fail("openProc still running after reap")
+        return
+      }
+      snapshots.push(snap("hang-reaped"))
       succeed()
     }
   }
