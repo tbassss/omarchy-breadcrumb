@@ -12,6 +12,7 @@ Item {
   property color foreground: "#cacccc"
   property string fontFamily: "sans-serif"
   property bool showLabel: true
+  property bool popupOpen: false
   signal changed(string value)
   implicitWidth: 160
   implicitHeight: 32
@@ -27,4 +28,8 @@ Item {
     root.value = selected
     root.changed(selected)
   }
+
+  function open() { root.popupOpen = true }
+  function close() { root.popupOpen = false }
+  function toggle() { root.popupOpen = !root.popupOpen }
 }

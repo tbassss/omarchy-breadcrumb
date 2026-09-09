@@ -202,10 +202,15 @@ ShellRoot {
       pickerValue: picker ? picker.value : "",
       storePath: p.storePath,
       lastOpenArgv: p.lastOpenArgv || [],
+      catcherBlocked: !!p.catcherBlocked,
+      catcherActivateCount: p.catcherActivateCount || 0,
+      openLaunchState: p.openLaunchState || "",
+      openLaunchExitCode: p.openLaunchExitCode || 0,
       compactSummary: geomOf("compactSummary"),
       compactColumn: geomOf("compactColumn"),
       expandButton: geomOf("expandButton"),
       activityScroller: geomOf("activityScroller"),
+      panelScroller: geomOf("panelScroller"),
       panelBox: geomOf("breadcrumbPanel")
     }
   }
@@ -1692,7 +1697,27 @@ ShellRoot {
         fail("expanded did not keep full text")
         return
       }
-      geometries.push({ tag: "expanded-full", editorTextLen: String(editor.text).length, panelHeight: geomOf("breadcrumbPanel").height })
+      var panelH = geomOf("breadcrumbPanel").height
+      if (panelH > 640) {
+        fail("capped panel still inflated: " + panelH)
+        return
+      }
+      var mainScroller = findNamed(p, "panelScroller")
+      if (!mainScroller) {
+        fail("panel scroller missing")
+        return
+      }
+      if (mainScroller.contentHeight <= mainScroller.height) {
+        fail("expanded content did not overflow capped viewport")
+        return
+      }
+      var beforeY = mainScroller.contentY
+      mainScroller.contentY = Math.min(mainScroller.contentHeight - mainScroller.height, 80)
+      if (mainScroller.contentY <= beforeY) {
+        fail("could not scroll main column")
+        return
+      }
+      geometries.push({ tag: "expanded-full", editorTextLen: String(editor.text).length, panelHeight: panelH, scrollerHeight: mainScroller.height, contentHeight: mainScroller.contentHeight, contentY: mainScroller.contentY })
       snapshots.push(snap("expanded-full"))
       grabShot("screenshot-expanded")
       step = 67
@@ -1716,7 +1741,21 @@ ShellRoot {
         fail("narrow width did not stack expanded layout")
         return
       }
-      geometries.push({ tag: "narrow", panelWidth: geomOf("breadcrumbPanel").width, sidebar: geomOf("activitySidebar"), narrow: p.narrow })
+      var narrowH = geomOf("breadcrumbPanel").height
+      if (narrowH > 640) {
+        fail("capped panel still inflated: " + narrowH)
+        return
+      }
+      var narrowScroller = findNamed(p, "panelScroller")
+      if (!narrowScroller) {
+        fail("panel scroller missing")
+        return
+      }
+      if (narrowScroller.contentHeight <= narrowScroller.height) {
+        fail("narrow expanded content did not overflow capped viewport")
+        return
+      }
+      geometries.push({ tag: "narrow", panelWidth: geomOf("breadcrumbPanel").width, panelHeight: narrowH, sidebar: geomOf("activitySidebar"), narrow: p.narrow, scrollerHeight: narrowScroller.height, contentHeight: narrowScroller.contentHeight })
       snapshots.push(snap("narrow"))
       grabShot("screenshot-narrow")
       step = 69
@@ -1738,16 +1777,43 @@ ShellRoot {
       if (!idle())
         return
       var expandBtn = findNamed(p, "expandButton")
+      var catcher = findNamed(p, "keyCatcher")
       if (!expandBtn) {
         fail("expand button missing")
         return
       }
-      expandBtn.forceActiveFocus()
-      if (!expandBtn.activeFocus) {
-        fail("expand button did not take focus")
+      if (!catcher) {
+        fail("keyCatcher missing")
         return
       }
-      var beforeView = p.view
+      if (expandBtn.focusable !== !p.busy) {
+        fail("busy Expand appeared actionable")
+        return
+      }
+      p.cursorIndex = 0
+      p.cursorActive = true
+      var catcherFocus = findNamed(p, "catcherFocus")
+      if (!catcherFocus) {
+        fail("catcherFocus missing")
+        return
+      }
+      catcherFocus.forceActiveFocus()
+      if (!catcherFocus.activeFocus) {
+        fail("keyCatcher did not take focus")
+        return
+      }
+      hostWindow.requestActivate()
+      step = 84
+      stepTicks = 0
+      return
+    }
+
+    if (step === 84) {
+      if (!idle())
+        return
+      var catcherFocus2 = findNamed(p, "catcherFocus")
+      if (!catcherFocus2 || !catcherFocus2.activeFocus)
+        catcherFocus2.forceActiveFocus()
       keyDriver.keyClick(Qt.Key_Return)
       step = 71
       stepTicks = 0
@@ -1758,10 +1824,47 @@ ShellRoot {
       if (!idle())
         return
       if (p.view === "compact") {
+        fail("catcher Return did not expand count=" + p.catcherActivateCount + " blocked=" + p.catcherBlocked)
+        return
+      }
+      if (p.view === "compact") {
         fail("keyboard expand did not toggle view")
         return
       }
       snapshots.push(snap("keyboard-expand"))
+      var summary = findNamed(p, "expandedSummary")
+      if (!summary) {
+        fail("expanded summary field missing")
+        return
+      }
+      summary.forceActiveFocus()
+      if (!p.catcherBlocked) {
+        fail("editor focus did not block catcher")
+        return
+      }
+      var beforeSummary = String(p.editSummary)
+      keyDriver.keyClick(Qt.Key_J)
+      if (p.view !== "expanded") {
+        fail("catcher consumed editor key")
+        return
+      }
+      findNamed(p, "catcherFocus").forceActiveFocus()
+      if (p.catcherBlocked) {
+        fail("catcher stayed blocked after leaving editor")
+        return
+      }
+      p.cursorIndex = 0
+      p.cursorActive = true
+      var traverse = findNamed(p, "panelScroller")
+      if (traverse)
+        traverse.contentY = 0
+      var n
+      for (n = 0; n < 8; n++)
+        keyDriver.keyClick(Qt.Key_J)
+      if (!traverse || traverse.contentY <= 0) {
+        fail("keyboard traversal did not reveal lower controls")
+        return
+      }
       p.openValidatedLink("file", missingFile)
       step = 72
       stepTicks = 0
@@ -1813,6 +1916,63 @@ ShellRoot {
         return
       }
       snapshots.push(snap("safe-web-open"))
+      var fakeOk = Quickshell.env("BREADCRUMB_FAKE_OPEN_OK")
+      if (!fakeOk) {
+        fail("BREADCRUMB_FAKE_OPEN_OK missing")
+        return
+      }
+      p.lastError = ""
+      p.launchOpenArgv([fakeOk, "--", "https://example.com/notes"])
+      step = 81
+      stepTicks = 0
+      return
+    }
+
+    if (step === 81) {
+      if (p.openLaunchState === "starting" || p.openLaunchState === "started")
+        return
+      if (p.lastError) {
+        fail("successful fake launch showed error")
+        return
+      }
+      if (p.openLaunchState !== "exited") {
+        fail("successful fake launch did not exit: " + p.openLaunchState)
+        return
+      }
+      snapshots.push(snap("fake-open-ok"))
+      var fakeFail = Quickshell.env("BREADCRUMB_FAKE_OPEN_FAIL")
+      if (!fakeFail) {
+        fail("BREADCRUMB_FAKE_OPEN_FAIL missing")
+        return
+      }
+      p.launchOpenArgv([fakeFail, "--", "https://example.com/notes"])
+      step = 82
+      stepTicks = 0
+      return
+    }
+
+    if (step === 82) {
+      if (p.openLaunchState === "starting" || p.openLaunchState === "started")
+        return
+      if (!p.lastError) {
+        fail("nonzero fake launch had no visible error")
+        return
+      }
+      snapshots.push(snap("fake-open-nonzero"))
+      p.launchOpenArgv(["/tmp/breadcrumb-missing-open-launcher-xyz", "--", "https://example.com/notes"])
+      step = 83
+      stepTicks = 0
+      return
+    }
+
+    if (step === 83) {
+      if (p.openLaunchState === "starting" || p.openLaunchState === "started")
+        return
+      if (!p.lastError) {
+        fail("start-failure launch had no visible error")
+        return
+      }
+      snapshots.push(snap("fake-open-start-failure"))
       p.createName = "An extremely long fictional activity name for the east tunnel mapping crew and lantern inventory overflow"
       p.createActivity()
       step = 75

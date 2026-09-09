@@ -15,6 +15,7 @@ Item {
   property int contentHeight: 200
   property int padding: 12
   property int margin: 5
+  property int defaultHeightCap: 520
   visible: open
   width: Math.max(1, contentWidth)
   height: Math.max(1, contentHeight)
@@ -29,8 +30,10 @@ Item {
 
   function fittedContentHeight(implicitHeight, cap) {
     var desired = Math.max(1, Number(implicitHeight) || 1)
+    var limit = root.defaultHeightCap
     if (cap !== undefined && Number(cap) > 0)
-      desired = Math.min(desired, Number(cap))
+      limit = Number(cap)
+    desired = Math.min(desired, limit)
     return Math.round(desired)
   }
 

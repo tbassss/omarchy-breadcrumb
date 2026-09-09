@@ -23,7 +23,7 @@ Inspected read-only on the-cave (`tbasss@the-cave`, no package patches):
 - `qs.Ui.Button` (installed): `text`, `foreground`, `fontFamily`, `fontSize`, `bordered`, `focusable`, `selected`, `clicked`. **No `enabled` property.** Keyboard Return/Space fires `clicked` only when `focusable`.
 - `qs.Ui.Dropdown.selectCurrent()` takes **no argument**; it assigns `root.value` from `currentIndex` then emits `changed`.
 - Subprocess: `Quickshell.Io.Process` with `command` as a string list
-- Open links: `Quickshell.execDetached(argv)` after `validate-link`, skipped when `BREADCRUMB_NO_OPEN=1`
+- Open links: `Process` argv seam (`openProc`) after `validate-link`. No shell. `BREADCRUMB_NO_OPEN=1` skips real `xdg-open`. Startup and nonzero failures set `lastError`. Isolated tests use fake argv launchers, never live apps.
 
 Package Button was not patched. The plugin no longer assigns `enabled:` on
 `qs.Ui.Button`. Clicks are guarded in `onClicked`; visual disable uses `opacity`;
@@ -40,7 +40,9 @@ keyboard uses `focusable`.
 | Stale-report | Explicit “Stale-report: A newer checkpoint was saved after this draft…” |
 | Narrow expanded | `Grid` stacks sidebar above editor when `column.width < Style.space(560)` |
 | Many activities | Flickable `activityScroller` capped at `Style.space(220)` |
-| Links | Open only after `validate-link`. Missing file/folder → `not_found`. No shell interpolation. Isolated tests set `BREADCRUMB_NO_OPEN=1` and record `lastOpenArgv`. |
+| Links | Open only after `validate-link`. Missing file/folder → `not_found`. Launch uses argv `Process` (no shell, bounded timeout). Isolated tests set `BREADCRUMB_NO_OPEN=1` and drive fake launchers for success / nonzero / start-failure. |
+| Keyboard | Packaged `PanelKeyCatcher` (`Keys.BeforeItem`). `blocked` when any editor is focused or any dropdown `popupOpen`. `j/k` move a cursor; Return/Space activate. Busy Expand is not `focusable`. |
+| Expanded viewport | Main column is `panelScroller` (Flickable). `contentHeight` is `fittedContentHeight(..., Style.space(520))`. Focus/cursor calls `revealItem`. |
 
 `validate-link` now checks that file/folder targets exist and that kind matches
 the path type. This is the Open adapter, not publish/CAS/draft persistence.
@@ -51,7 +53,7 @@ Publishing a checkpoint may still store a link to a path that does not exist yet
 `tests/native/run-isolated.sh` copies packaged `/usr/share/omarchy/shell/{Commons,Ui}`
 into the disposable harness, then overlays repo stubs for:
 
-- `KeyboardPanel.qml` — real type is WlrLayershell `PanelWindow`
+- `KeyboardPanel.qml` — real type is WlrLayershell `PanelWindow`. The stub applies `defaultHeightCap: 520` so isolated geometry matches a capped host, not an unbounded implicit height.
 - `Panel.qml` — real type wires `PanelController` + `IpcHandler`
 
 Remaining host types used in this run are the packaged files (Button, Dropdown,
@@ -89,53 +91,83 @@ git diff --check
 
 64 tests OK (18.580s), including missing-file `not_found` without shell metacharacters.
 
+Repair of rejected `ddd3134` (this candidate): RED then GREEN for the three
+blocked UI/adapter failures. Independent fake-launcher tests live in
+`tests/test_open_launch.py` (success / nonzero / missing binary; no `xdg-open`,
+no shell). Source contracts forbid `execDetached`, require `openProc`, catcher
+`blocked: root.catcherBlocked`, `panelScroller`, and cap-aware
+`fittedContentHeight(..., Style.space(520))`.
+
+GREEN, full suite from the repository root after the repair:
+
+```
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
+python3 -m py_compile bin/breadcrumb-store bin/breadcrumb tests/*.py
+git diff --check
+```
+
+69 tests OK. Store/CAS/draft/publication tests unchanged in behavior.
+
 ### Native (isolated component, the-cave)
 
 Not live desktop acceptance. Unique disposable `HOME`/`XDG`, `QT_QPA_PLATFORM=offscreen`,
 no Wayland, no `shell.json` mutation, no plugin enable, live `qs` pid unchanged.
 Archive transferred with `ssh … 'cat > /tmp/breadcrumb-issue7.tar' < archive`
 (stdin bytes, no note interpolation). `BREADCRUMB_NO_OPEN=1` so Open records argv
-and does not call `xdg-open`.
+and does not call `xdg-open`. Fake launchers are argv Python scripts in the
+disposable workdir.
 
 ```
 ARCHIVE=<plugin tar> \
-CANDIDATE_SHA=working-tree-issue7 \
-EVIDENCE_DIR=/tmp/breadcrumb-evidence-issue7-ykjx \
+CANDIDATE_SHA=<git sha> \
+EVIDENCE_DIR=/tmp/breadcrumb-issue7-20260909191625-13635/evidence \
 HARNESS_SRC=tests/native/harness \
   ./tests/native/run-isolated.sh
 ```
 
 Result: `validate_rc=0`, `qs_rc=0`, `ui_ok=true`, `HARNESS_OK`,
 `classification=component-test-not-full-host-integration`, finished `step=80`,
-`ticks=168`, `qmlErrors=[]`.
+`ticks=333`, `qmlErrors=[]`.
 
 Packaged overlay: `button_declares_enabled=0`; Dropdown `selectCurrent()` is the
-no-arg installed API. Keyboard Return on the Expand button toggled Compact→Expanded.
-Compact long-text geometry `summaryHeight=32` at width 380. Expanded editor kept
-480-character full text. Narrow stacked at width 360. Missing-file error visible
-(`That file or folder is missing.`). Safe web Open recorded
-`["xdg-open","--","https://example.com/notes"]` without launching. Remember-view
-recreate stayed Expanded. Live `shell.json` sha unchanged
+no-arg installed API; packaged `PanelKeyCatcher` is overlaid. Catcher Return on a
+non-editor descendant (`catcherFocus`) expanded Compact→Expanded
+(`catcherActivateCount=1`). Editor focus blocked the catcher; `j` typed into the
+summary field instead of moving the panel cursor. Busy Expand uses
+`focusable: (!root.busy)`.
+
+Capped geometry (not the rejected 1393/1820 inflated stub screenshots):
+expanded panel `720×520` with `panelScroller.contentHeight=1393` and
+`contentY=80`; narrow `360×520` with `contentHeight=1820`. Compact glance
+`summaryHeight=32` at width 380.
+
+Process launch (fake argv, no real apps): success `openLaunchState=exited`
+exit 0; nonzero exit 2 visible `Could not open that link.`; missing launcher
+start-failure same visible error. Safe web Open still recorded
+`["xdg-open","--","https://example.com/notes"]` without launching. Missing-file
+error visible (`That file or folder is missing.`). Remember-view recreate stayed
+Expanded. Live `shell.json` sha unchanged
 (`469bfd9b5c8a29ff3e5e8f45a09a66729eaf6a4e4b42462cf26fc99f4102eaee`); live `qs`
-pid 1600 unchanged; live plugin dir still had no `tbassss.breadcrumb`.
-`ui-results.json` sha256 `c95c20792beadff116edbb7e9d40495534d5bbeb8df4e98a46d8de4e60861860`.
+pid 1462 unchanged; live plugin dir still had no `tbassss.breadcrumb`.
+`ui-results.json` sha256 `420a9a218400d0dfdea2e2394aba2830737efa423c0272b23040a4df85287774`.
 
 Fictional isolated screenshots (copied locally, not committed):
 
-- `/tmp/breadcrumb-issue7-evidence/screenshots/screenshot-compact.png`
-- `/tmp/breadcrumb-issue7-evidence/screenshots/screenshot-expanded.png`
-- `/tmp/breadcrumb-issue7-evidence/screenshots/screenshot-narrow.png`
-- `/tmp/breadcrumb-issue7-evidence/screenshots/screenshot-many-activities.png`
+- `/tmp/breadcrumb-issue7-repair-evidence/screenshots/screenshot-compact.png` (380×277)
+- `/tmp/breadcrumb-issue7-repair-evidence/screenshots/screenshot-expanded.png` (720×520)
+- `/tmp/breadcrumb-issue7-repair-evidence/screenshots/screenshot-narrow.png` (360×520)
+- `/tmp/breadcrumb-issue7-repair-evidence/screenshots/screenshot-many-activities.png` (720×520)
 
-Cave originals: `/tmp/breadcrumb-evidence-issue7-ykjx/screenshots/`.
+Cave originals: `/tmp/breadcrumb-issue7-20260909191625-13635/evidence/screenshots/`.
 
 ### Classification
 
 | Check | Kind |
 |---|---|
 | `unittest discover -s tests` | Source-contract / store / public CLI process |
-| Isolated `tests/native/` on the-cave with packaged Button/Dropdown/TextField/Color/Style | Native component (real Panel.qml + qs + Qt offscreen + packaged controls) |
-| KeyboardPanel / host Panel | **Stubbed.** WlrLayershell / IpcHandler would attach to the compositor or live IPC. |
+| `tests/test_open_launch.py` fake argv Process outcomes | Source process seam (no QML runtime, no real apps) |
+| Isolated `tests/native/` on the-cave with packaged Button/Dropdown/TextField/PanelKeyCatcher/Color/Style | Native component (real Panel.qml + qs + Qt offscreen + packaged controls) |
+| KeyboardPanel / host Panel | **Stubbed.** WlrLayershell / IpcHandler would attach to the compositor or live IPC. Stub is cap-aware (`defaultHeightCap` 520). |
 | Live installed SSH workflow / bar | **Not run.** Installation gate. |
 | Dual-monitor / live theme / layershell | **Not run.** Requires owner approval. |
 
@@ -144,5 +176,4 @@ Cave originals: `/tmp/breadcrumb-evidence-issue7-ykjx/screenshots/`.
 - Independent persistence/concurrency review (parent-owned; required before merge). `validate-link` existence checks are Open-adapter only; CAS/draft rules unchanged.
 - Live install, restart, merge, and release remain unapproved (#8).
 - Dual-monitor, live theme swap, and real KeyboardPanel layershell are **not** claimed. Smallest proposed approved operation, if wanted later: a nested/throwaway Hyprland session that is **not** the user's live desktop, still without writing `~/.config/omarchy/shell.json` of the live user. Exact command is not run here.
-- `Quickshell.execDetached` cannot report `xdg-open` failures after launch; missing-file/kind mismatches are shown before launch.
 - This slice is not release-ready.

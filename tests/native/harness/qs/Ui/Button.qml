@@ -15,6 +15,7 @@ Item {
   property bool selected: false
   property bool active: false
   property bool focusable: false
+  property string tooltipText: ""
   signal clicked()
   implicitWidth: 80
   implicitHeight: 24

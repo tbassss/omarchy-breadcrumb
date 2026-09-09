@@ -56,6 +56,14 @@ Panel {
   property bool showArchived: false
   property var lastOpenArgv: []
   property int contentWidthHint: 0
+  property bool openLaunchStarted: false
+  property int openLaunchExitCode: 0
+  property string openLaunchState: ""
+  property bool cursorActive: false
+  property int cursorIndex: 0
+  property int editorFocusCount: 0
+  property int openPopupCount: 0
+  property int catcherActivateCount: 0
 
   readonly property bool busy: storeProc.running
   readonly property bool expanded: root.view === "expanded"
@@ -68,6 +76,7 @@ Panel {
   readonly property color muted: Color.muted
   readonly property string fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
   readonly property bool narrow: column.width < Style.space(560)
+  readonly property bool catcherBlocked: root.editorFocusCount > 0 || root.openPopupCount > 0
 
   function buildActivityOptions() {
     var opts = []
@@ -176,6 +185,7 @@ Panel {
       hydrateEditorFromSnapshot(body)
     root.noteExternalPublication(body)
     root.syncActivityPicker()
+    Qt.callLater(function() { root.revealSelectedActivity() })
   }
 
   function noteExternalPublication(body) {
@@ -580,9 +590,175 @@ Panel {
 
   function launchOpenArgv(argv) {
     root.lastOpenArgv = argv
-    if (Quickshell.env("BREADCRUMB_NO_OPEN") === "1")
+    var cmd = root.resolveOpenArgv(argv)
+    if (!cmd.length)
       return
-    Quickshell.execDetached(argv)
+    root.startOpenProcess(cmd)
+  }
+
+  function resolveOpenArgv(argv) {
+    if (!argv || !argv.length)
+      return []
+    var copy = []
+    for (var i = 0; i < argv.length; i++)
+      copy.push(String(argv[i]))
+    var launcher = Quickshell.env("BREADCRUMB_OPEN_LAUNCHER")
+    if (launcher && String(launcher).length)
+      copy[0] = String(launcher)
+    else if (Quickshell.env("BREADCRUMB_NO_OPEN") === "1" && copy[0] === "xdg-open")
+      return []
+    return copy
+  }
+
+  function startOpenProcess(cmd) {
+    if (openProc.running)
+      openProc.running = false
+    root.openLaunchStarted = false
+    root.openLaunchExitCode = 0
+    root.openLaunchState = "starting"
+    openProc.command = cmd
+    openProc.running = true
+    openTimeout.restart()
+    Qt.callLater(function() {
+      if (root.openLaunchState === "starting" && !openProc.running && !root.openLaunchStarted)
+        root.noteOpenLaunchFailure()
+    })
+  }
+
+  function noteOpenLaunchFailure() {
+    root.lastError = "Could not open that link."
+    root.openLaunchState = "failed"
+    openTimeout.stop()
+  }
+
+  function noteEditorFocus(focused) {
+    root.editorFocusCount += focused ? 1 : -1
+    if (root.editorFocusCount < 0)
+      root.editorFocusCount = 0
+  }
+
+  function notePopup(open) {
+    root.openPopupCount += open ? 1 : -1
+    if (root.openPopupCount < 0)
+      root.openPopupCount = 0
+  }
+
+  function elidedLabel(text, maxChars) {
+    var s = String(text || "")
+    var limit = maxChars || 28
+    if (s.length <= limit)
+      return s
+    return s.slice(0, Math.max(1, limit - 1)) + "…"
+  }
+
+  function keyboardTargets() {
+    var t = []
+    if (expandButton && expandButton.visible && expandButton.focusable)
+      t.push(expandButton)
+    if (!root.expanded) {
+      if (activityPicker && activityPicker.visible)
+        t.push(activityPicker)
+      return t
+    }
+    if (summaryField && summaryField.visible)
+      t.push(summaryField)
+    if (nextField && nextField.visible)
+      t.push(nextField)
+    if (contextArea && contextArea.visible)
+      t.push(contextArea)
+    if (saveCheckpointButton && saveCheckpointButton.visible && saveCheckpointButton.focusable)
+      t.push(saveCheckpointButton)
+    return t
+  }
+
+  function applyCursorHighlight() {
+    var t = root.keyboardTargets()
+    for (var i = 0; i < t.length; i++) {
+      if (t[i] && t[i].hasCursor !== undefined)
+        t[i].hasCursor = (root.cursorActive && i === root.cursorIndex)
+    }
+  }
+
+  function revealItem(item) {
+    if (!item || !panelScroller)
+      return
+    var mapped = item.mapToItem(panelScroller.contentItem, 0, 0)
+    var y = mapped.y
+    var h = Math.max(1, item.height)
+    var top = panelScroller.contentY
+    var view = panelScroller.height
+    var pad = Style.space(8)
+    if (y < top)
+      panelScroller.contentY = Math.max(0, y - pad)
+    else if (y + h > top + view)
+      panelScroller.contentY = Math.max(0, Math.min(panelScroller.contentHeight - view, y + h - view + pad))
+  }
+
+  function revealSelectedActivity() {
+    if (!activityScroller || !activityList)
+      return
+    var kids = activityList.children
+    for (var i = 0; i < kids.length; i++) {
+      var btn = kids[i]
+      if (!btn || !btn.selected)
+        continue
+      var y = btn.y
+      var h = Math.max(1, btn.height)
+      if (y < activityScroller.contentY)
+        activityScroller.contentY = Math.max(0, y)
+      else if (y + h > activityScroller.contentY + activityScroller.height)
+        activityScroller.contentY = Math.max(0, y + h - activityScroller.height)
+      return
+    }
+  }
+
+  function moveKeyboardCursor(dx, dy) {
+    var t = root.keyboardTargets()
+    if (!t.length)
+      return
+    if (!root.cursorActive) {
+      root.cursorActive = true
+      if (root.cursorIndex < 0 || root.cursorIndex >= t.length)
+        root.cursorIndex = 0
+      root.applyCursorHighlight()
+      root.revealItem(t[root.cursorIndex])
+      return
+    }
+    var delta = dy !== 0 ? dy : dx
+    root.cursorIndex = Math.max(0, Math.min(t.length - 1, root.cursorIndex + delta))
+    root.applyCursorHighlight()
+    root.revealItem(t[root.cursorIndex])
+  }
+
+  function activateKeyboardCursor() {
+    var t = root.keyboardTargets()
+    if (!t.length)
+      return
+    if (root.cursorIndex < 0 || root.cursorIndex >= t.length)
+      root.cursorIndex = 0
+    var item = t[root.cursorIndex]
+    root.cursorActive = true
+    root.applyCursorHighlight()
+    if (!item)
+      return
+    if (item === expandButton) {
+      if (root.busy || !expandButton.focusable)
+        return
+      root.toggleView()
+      return
+    }
+    if (item === activityPicker && activityPicker.toggle) {
+      activityPicker.toggle()
+      return
+    }
+    if (item === saveCheckpointButton) {
+      if (!root.busy && saveCheckpointButton.focusable)
+        root.saveCheckpoint()
+      return
+    }
+    if (item.forceActiveFocus)
+      item.forceActiveFocus()
+    root.revealItem(item)
   }
 
   function clearDraftState() {
@@ -797,21 +973,48 @@ Panel {
     open: root.opened
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(root.contentWidthHint > 0 ? root.contentWidthHint : Style.space(root.expanded ? 720 : 380))
-    contentHeight: panel.fittedContentHeight(column.implicitHeight)
+    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(520))
 
     PanelKeyCatcher {
       id: keyCatcher
+      objectName: "keyCatcher"
       anchors.fill: parent
-      blocked: contextArea.activeFocus
+      focus: true
+      blocked: root.catcherBlocked
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
+      onMoveRequested: function(dx, dy) { root.moveKeyboardCursor(dx, dy) }
+      onActivateRequested: {
+        root.catcherActivateCount += 1
+        root.activateKeyboardCursor()
+      }
 
-      Column {
-        id: column
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.top: parent.top
-        spacing: Style.space(10)
+      Item {
+        id: catcherFocus
+        objectName: "catcherFocus"
+        width: 1
+        height: 1
+        focus: true
+        activeFocusOnTab: true
+      }
+
+      Flickable {
+        id: panelScroller
+        objectName: "panelScroller"
+        anchors.fill: parent
+        clip: true
+        focus: false
+        activeFocusOnTab: false
+        boundsBehavior: Flickable.StopAtBounds
+        contentWidth: width
+        contentHeight: column.implicitHeight
+        interactive: contentHeight > height
+        flickableDirection: Flickable.VerticalFlick
+
+        Column {
+          id: column
+          width: panelScroller.width
+          spacing: Style.space(10)
 
         Row {
           width: parent.width
@@ -832,7 +1035,7 @@ Panel {
             fontFamily: root.fontFamily
             fontSize: Style.font.bodySmall
             bordered: true
-            focusable: true
+            focusable: (!root.busy)
             opacity: (!root.busy) ? 1 : 0.45
             onClicked: { if (!root.busy) root.toggleView() }
           }
@@ -956,10 +1159,12 @@ Panel {
             textFormat: Text.PlainText
           }
           TextField {
+            id: emptyNameField
             width: parent.width
             text: root.editName
             foreground: root.fg
             onTextChanged: root.editName = text
+            onActiveFocusChanged: root.noteEditorFocus(activeFocus)
           }
           Button {
             text: root.busy ? "Creating…" : "Create activity"
@@ -992,6 +1197,7 @@ Panel {
             foreground: root.fg
             fontFamily: root.fontFamily
             onChanged: function(v) { root.switchActivity(v) }
+            onPopupOpenChanged: root.notePopup(popupOpen)
           }
           Text {
             width: parent.width
@@ -1145,7 +1351,8 @@ Panel {
                     required property var modelData
                     width: activityList.width
                     clip: true
-                    text: root.activityLabel(modelData)
+                    text: root.elidedLabel(root.activityLabel(modelData), 28)
+                    tooltipText: root.activityLabel(modelData)
                     foreground: root.fg
                     fontFamily: root.fontFamily
                     fontSize: Style.font.bodySmall
@@ -1159,10 +1366,12 @@ Panel {
               }
             }
             TextField {
+              id: createNameField
               width: parent.width
               text: root.createName
               foreground: root.fg
               onTextChanged: root.createName = text
+              onActiveFocusChanged: root.noteEditorFocus(activeFocus)
             }
             Button {
               text: "Create activity"
@@ -1182,10 +1391,12 @@ Panel {
               textFormat: Text.PlainText
             }
             TextField {
+              id: renameField
               width: parent.width
               text: root.renameName
               foreground: root.fg
               onTextChanged: root.renameName = text
+              onActiveFocusChanged: root.noteEditorFocus(activeFocus)
             }
             Button {
               text: "Rename activity"
@@ -1244,6 +1455,7 @@ Panel {
               textFormat: Text.PlainText
             }
             Dropdown {
+              id: statePicker
               width: parent.width
               label: "State"
               value: root.editState
@@ -1251,6 +1463,7 @@ Panel {
               foreground: root.fg
               fontFamily: root.fontFamily
               onChanged: function(v) { root.editState = v; root.markUserEdit() }
+              onPopupOpenChanged: root.notePopup(popupOpen)
             }
             Text {
               text: "Summary"
@@ -1260,12 +1473,18 @@ Panel {
               textFormat: Text.PlainText
             }
             TextField {
+              id: summaryField
               objectName: "expandedSummary"
               width: parent.width
               text: root.editSummary
               foreground: root.fg
               onTextChanged: root.editSummary = text
               onTextEdited: root.markUserEdit()
+              onActiveFocusChanged: {
+                root.noteEditorFocus(activeFocus)
+                if (activeFocus)
+                  root.revealItem(summaryField)
+              }
             }
             Text {
               text: root.editState === "done" ? "Next step (optional)" : "Next step"
@@ -1275,11 +1494,18 @@ Panel {
               textFormat: Text.PlainText
             }
             TextField {
+              id: nextField
+              objectName: "expandedNext"
               width: parent.width
               text: root.editNext
               foreground: root.fg
               onTextChanged: root.editNext = text
               onTextEdited: root.markUserEdit()
+              onActiveFocusChanged: {
+                root.noteEditorFocus(activeFocus)
+                if (activeFocus)
+                  root.revealItem(nextField)
+              }
             }
             Text {
               text: "Context"
@@ -1290,6 +1516,7 @@ Panel {
             }
             TextArea {
               id: contextArea
+              objectName: "contextArea"
               width: parent.width
               height: Style.space(90)
               text: root.editContext
@@ -1297,9 +1524,27 @@ Panel {
               color: root.fg
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
+              selectedTextColor: root.fg
+              selectionColor: Color.accent
               placeholderText: "Optional longer notes"
+              placeholderTextColor: root.muted
+              leftPadding: Style.space(8)
+              rightPadding: Style.space(8)
+              topPadding: Style.space(6)
+              bottomPadding: Style.space(6)
+              background: Rectangle {
+                color: Color.background
+                border.width: 1
+                border.color: contextArea.activeFocus ? Color.accent : root.muted
+                radius: Style.cornerRadius
+              }
               onTextChanged: root.editContext = text
               onTextEdited: root.markUserEdit()
+              onActiveFocusChanged: {
+                root.noteEditorFocus(activeFocus)
+                if (activeFocus)
+                  root.revealItem(contextArea)
+              }
             }
             Text {
               text: "Reported author"
@@ -1318,11 +1563,13 @@ Panel {
               textFormat: Text.PlainText
             }
             TextField {
+              id: authorField
               width: parent.width
               text: root.editAuthor
               foreground: root.fg
               onTextChanged: root.editAuthor = text
               onTextEdited: root.markUserEdit()
+              onActiveFocusChanged: root.noteEditorFocus(activeFocus)
             }
             Text {
               text: "Links"
@@ -1346,6 +1593,7 @@ Panel {
                   foreground: root.fg
                   onTextChanged: linkModel.setProperty(index, "label", text)
                   onTextEdited: root.markUserEdit()
+                  onActiveFocusChanged: root.noteEditorFocus(activeFocus)
                 }
                 Row {
                   spacing: Style.space(6)
@@ -1357,6 +1605,7 @@ Panel {
                     foreground: root.fg
                     fontFamily: root.fontFamily
                     onChanged: function(v) { linkModel.setProperty(index, "kind", v); root.markUserEdit() }
+                    onPopupOpenChanged: root.notePopup(popupOpen)
                   }
                   TextField {
                     width: Style.space(180)
@@ -1364,6 +1613,7 @@ Panel {
                     foreground: root.fg
                     onTextChanged: linkModel.setProperty(index, "target", text)
                     onTextEdited: root.markUserEdit()
+                    onActiveFocusChanged: root.noteEditorFocus(activeFocus)
                   }
                 }
                 Row {
@@ -1413,6 +1663,8 @@ Panel {
               textFormat: Text.PlainText
             }
             Button {
+              id: saveCheckpointButton
+              objectName: "saveCheckpointButton"
               text: root.busy ? "Saving…" : "Save checkpoint"
               focusable: (!root.busy)
               opacity: (!root.busy) ? 1 : 0.45
@@ -1469,8 +1721,9 @@ Panel {
                 width: parent.width
                 spacing: Style.space(2)
                 Text {
+                  objectName: "historyDate"
                   width: parent.width
-                  text: (modelData.saved_at || "") + " · revision " + modelData.revision
+                  text: Model.formatSavedAt(modelData.saved_at) + " · revision " + modelData.revision
                   color: root.fg
                   opacity: 0.7
                   wrapMode: Text.WordWrap
@@ -1523,6 +1776,39 @@ Panel {
           font.pixelSize: Style.font.bodySmall
           textFormat: Text.PlainText
         }
+      }
+      }
+    }
+  }
+
+  Timer {
+    id: openTimeout
+    interval: 8000
+    repeat: false
+    onTriggered: {
+      if (openProc.running)
+        openProc.running = false
+      if (root.openLaunchState === "starting" || root.openLaunchState === "started")
+        root.noteOpenLaunchFailure()
+    }
+  }
+
+  Process {
+    id: openProc
+    onStarted: {
+      root.openLaunchStarted = true
+      root.openLaunchState = "started"
+    }
+    onExited: function(exitCode, exitStatus) {
+      root.openLaunchExitCode = exitCode
+      openTimeout.stop()
+      if (root.openLaunchState === "failed")
+        return
+      if (!root.openLaunchStarted || exitCode !== 0)
+        root.noteOpenLaunchFailure()
+      else {
+        root.openLaunchState = "exited"
+        root.lastError = ""
       }
     }
   }

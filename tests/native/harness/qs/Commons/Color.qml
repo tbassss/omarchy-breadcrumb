@@ -8,4 +8,6 @@ QtObject {
   property color foreground: "#cacccc"
   property color urgent: "#a55555"
   property color muted: "#8a8c8c"
+  property color background: "#101315"
+  property color accent: "#6a9ccc"
 }

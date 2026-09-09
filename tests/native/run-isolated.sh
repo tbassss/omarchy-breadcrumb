@@ -101,6 +101,13 @@ cp -a "$WORKDIR/plugin/." "$WORKDIR/home/.config/omarchy/plugins/tbassss.breadcr
   (cd "$WORKDIR/plugin" && find . -type f -print0 | sort -z | xargs -0 sha256sum)
 } | tee "$EVIDENCE_DIR/logs/candidate-files.sha256"
 
+# Fake argv launchers for Process tests. Never xdg-open / real apps.
+FAKE_OPEN_OK="$WORKDIR/fake-open-ok"
+FAKE_OPEN_FAIL="$WORKDIR/fake-open-fail"
+printf '%s\n' '#!/usr/bin/python3' 'raise SystemExit(0)' > "$FAKE_OPEN_OK"
+printf '%s\n' '#!/usr/bin/python3' 'raise SystemExit(2)' > "$FAKE_OPEN_FAIL"
+chmod 755 "$FAKE_OPEN_OK" "$FAKE_OPEN_FAIL"
+
 export OMARCHY_PATH=/usr/share/omarchy
 echo "=== omarchy plugin validate ==="
 VALIDATE_OUT="$EVIDENCE_DIR/logs/omarchy-plugin-validate.txt"
@@ -143,6 +150,8 @@ env -i \
   BREADCRUMB_RESULTS="$RESULTS" \
   BREADCRUMB_EVIDENCE="$EVIDENCE_DIR" \
   BREADCRUMB_NO_OPEN=1 \
+  BREADCRUMB_FAKE_OPEN_OK="$FAKE_OPEN_OK" \
+  BREADCRUMB_FAKE_OPEN_FAIL="$FAKE_OPEN_FAIL" \
   OMARCHY_PATH=/usr/share/omarchy \
   PYTHONDONTWRITEBYTECODE=1 \
   timeout 180 /usr/bin/qs -p "$WORKDIR/harness/shell.qml" --no-color -v \
