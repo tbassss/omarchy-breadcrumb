@@ -81,6 +81,8 @@ class TestDrafts(unittest.TestCase):
         state: str = "in_progress",
         author: str = "You",
         links: list | None = None,
+        acknowledge_base: bool | None = None,
+        observed_revision: int | None = None,
     ) -> subprocess.CompletedProcess[str]:
         payload = {
             "activity_id": activity_id,
@@ -94,6 +96,10 @@ class TestDrafts(unittest.TestCase):
         }
         if links is not None:
             payload["links"] = links
+        if acknowledge_base is not None:
+            payload["acknowledge_base"] = acknowledge_base
+        if observed_revision is not None:
+            payload["observed_revision"] = observed_revision
         return run_store(self.data_dir, "save-draft", payload)
 
     def test_stale_save_draft_does_not_overwrite_newer_draft(self) -> None:
@@ -132,12 +138,16 @@ class TestDrafts(unittest.TestCase):
         self.assertNotEqual(resurrect.returncode, 0)
         err = decode(resurrect)
         self.assertEqual(err["error"], "stale_revision")
-        self.assertEqual(err["current_draft_revision"], 0)
+        self.assertEqual(err["current_draft_revision"], 2)
         still = decode(run_store(self.data_dir, "get", {"activity_id": activity["id"]}))
         self.assertIsNone(still["draft"])
+        self.assertEqual(still["draft_generation"], 2)
         conn = sqlite3.connect(self.data_dir / "breadcrumb.sqlite")
-        self.assertEqual(conn.execute("SELECT COUNT(*) FROM drafts").fetchone()[0], 0)
+        row = conn.execute("SELECT revision, live FROM drafts WHERE activity_id = ?", (activity["id"],)).fetchone()
         conn.close()
+        self.assertIsNotNone(row)
+        self.assertEqual(row[0], 2)
+        self.assertEqual(row[1], 0)
 
     def _publish(
         self,
@@ -176,9 +186,10 @@ class TestDrafts(unittest.TestCase):
         self.assertNotEqual(resurrect.returncode, 0)
         err = decode(resurrect)
         self.assertEqual(err["error"], "stale_revision")
-        self.assertEqual(err["current_draft_revision"], 0)
+        self.assertEqual(err["current_draft_revision"], 2)
         still = decode(run_store(self.data_dir, "get", {"activity_id": activity["id"]}))
         self.assertIsNone(still["draft"])
+        self.assertEqual(still["draft_generation"], 2)
         self.assertEqual(still["current"]["summary"], "Published checkpoint")
         self.assertEqual(len(still["history"]["entries"]), 1)
 
@@ -466,6 +477,169 @@ class TestDrafts(unittest.TestCase):
         got = decode(run_store(self.data_dir, "get", {"activity_id": activity["id"]}))
         self.assertEqual(got["draft"]["summary"], "Newer draft")
         self.assertEqual(got["draft"]["revision"], 2)
+
+    def test_ordinary_save_draft_cannot_advance_acknowledged_base(self) -> None:
+        activity = decode(run_store(self.data_dir, "create-activity", {"name": "Study"}))["activity"]
+        self._publish(activity["id"], 0, "Published lantern v1")
+        first = decode(self._save_draft(activity["id"], 0, "Draft against v1", base_revision=1))
+        self.assertEqual(first["draft"]["base_revision"], 1)
+        self._publish(activity["id"], 1, "Published lantern v2")
+        got = decode(run_store(self.data_dir, "get", {"activity_id": activity["id"]}))
+        self.assertEqual(got["revision"], 2)
+        self.assertEqual(got["draft"]["base_revision"], 1)
+        rebase = self._save_draft(activity["id"], 1, "Silently adopted v2", base_revision=2)
+        self.assertEqual(rebase.returncode, 4, rebase.stdout)
+        err = decode(rebase)
+        self.assertEqual(err["error"], "stale_revision")
+        self.assertEqual(err.get("current_base_revision"), 1)
+        still = decode(run_store(self.data_dir, "get", {"activity_id": activity["id"]}))
+        self.assertEqual(still["draft"]["summary"], "Draft against v1")
+        self.assertEqual(still["draft"]["base_revision"], 1)
+        self.assertEqual(still["current"]["summary"], "Published lantern v2")
+        updated = decode(self._save_draft(activity["id"], 1, "Still against v1", base_revision=1))
+        self.assertEqual(updated["draft"]["base_revision"], 1)
+        self.assertEqual(updated["draft"]["summary"], "Still against v1")
+
+    def test_refresh_old_base_publish_conflicts_until_acknowledged_observed(self) -> None:
+        activity = decode(run_store(self.data_dir, "create-activity", {"name": "Study"}))["activity"]
+        self._publish(activity["id"], 0, "Published lantern v1")
+        decode(self._save_draft(activity["id"], 0, "Keep-editing draft", base_revision=1))
+        self._publish(activity["id"], 1, "Agent lantern v2")
+        ordinary = run_store(
+            self.data_dir,
+            "publish",
+            {
+                "activity_id": activity["id"],
+                "expected_revision": 1,
+                "summary": "Keep-editing draft",
+                "next_step": "Keep going",
+                "state": "in_progress",
+                "author": "You",
+                "consume_draft_revision": 1,
+            },
+        )
+        self.assertEqual(ordinary.returncode, 4)
+        after_keep = decode(run_store(self.data_dir, "get", {"activity_id": activity["id"]}))
+        self.assertEqual(after_keep["current"]["summary"], "Agent lantern v2")
+        self.assertEqual(after_keep["draft"]["summary"], "Keep-editing draft")
+        self.assertEqual(after_keep["draft"]["base_revision"], 1)
+        stale_ack = self._save_draft(
+            activity["id"],
+            1,
+            "Keep-editing draft",
+            base_revision=2,
+            acknowledge_base=True,
+            observed_revision=1,
+        )
+        self.assertEqual(stale_ack.returncode, 4, stale_ack.stdout)
+        ack = decode(
+            self._save_draft(
+                activity["id"],
+                1,
+                "Keep-editing draft",
+                base_revision=2,
+                acknowledge_base=True,
+                observed_revision=2,
+            )
+        )
+        self.assertEqual(ack["draft"]["base_revision"], 2)
+        resolved = self._publish(
+            activity["id"],
+            2,
+            "Keep-editing draft",
+            consume_draft_revision=ack["draft"]["revision"],
+        )
+        self.assertEqual(resolved["revision"], 3)
+        done = decode(run_store(self.data_dir, "get", {"activity_id": activity["id"]}))
+        self.assertEqual(done["current"]["summary"], "Keep-editing draft")
+        self.assertIsNone(done["draft"])
+
+    def test_discard_recreate_generation_aba_stale_discard_keeps_new_draft(self) -> None:
+        activity = decode(run_store(self.data_dir, "create-activity", {"name": "Study"}))["activity"]
+        first = decode(self._save_draft(activity["id"], 0, "Original draft"))
+        self.assertEqual(first["draft"]["revision"], 1)
+        discarded = run_store(
+            self.data_dir,
+            "discard-draft",
+            {"activity_id": activity["id"], "expected_draft_revision": 1},
+        )
+        self.assertEqual(discarded.returncode, 0, discarded.stderr)
+        discarded_body = decode(discarded)
+        self.assertIsNone(discarded_body["draft"])
+        tombstone_generation = discarded_body.get("draft_generation")
+        self.assertIsInstance(tombstone_generation, int)
+        self.assertGreater(tombstone_generation, 0)
+        got = decode(run_store(self.data_dir, "get", {"activity_id": activity["id"]}))
+        self.assertIsNone(got["draft"])
+        self.assertEqual(got.get("draft_generation"), tombstone_generation)
+        recreated = decode(
+            self._save_draft(
+                activity["id"],
+                tombstone_generation,
+                "New draft after discard",
+                base_revision=0,
+            )
+        )
+        self.assertGreater(recreated["draft"]["revision"], tombstone_generation)
+        stale = run_store(
+            self.data_dir,
+            "discard-draft",
+            {"activity_id": activity["id"], "expected_draft_revision": 1},
+        )
+        self.assertEqual(stale.returncode, 4, stale.stdout)
+        still = decode(run_store(self.data_dir, "get", {"activity_id": activity["id"]}))
+        self.assertEqual(still["draft"]["summary"], "New draft after discard")
+        conn = sqlite3.connect(self.data_dir / "breadcrumb.sqlite")
+        row = conn.execute(
+            "SELECT revision, live FROM drafts WHERE activity_id = ?",
+            (activity["id"],),
+        ).fetchone()
+        conn.close()
+        self.assertIsNotNone(row)
+        self.assertEqual(row[0], recreated["draft"]["revision"])
+        self.assertEqual(row[1], 1)
+
+    def test_stale_consume_after_discard_recreate_does_not_delete_new_draft(self) -> None:
+        activity = decode(run_store(self.data_dir, "create-activity", {"name": "Study"}))["activity"]
+        self._publish(activity["id"], 0, "Published lantern v1")
+        decode(self._save_draft(activity["id"], 0, "Old draft", base_revision=1))
+        discarded = decode(
+            run_store(
+                self.data_dir,
+                "discard-draft",
+                {"activity_id": activity["id"], "expected_draft_revision": 1},
+            )
+        )
+        tombstone_generation = discarded["draft_generation"]
+        recreated = decode(
+            self._save_draft(
+                activity["id"],
+                tombstone_generation,
+                "New draft after discard",
+                base_revision=1,
+            )
+        )
+        stale_consume = run_store(
+            self.data_dir,
+            "publish",
+            {
+                "activity_id": activity["id"],
+                "expected_revision": 1,
+                "summary": "Stale consume publish",
+                "next_step": "No",
+                "state": "in_progress",
+                "author": "You",
+                "consume_draft_revision": 1,
+            },
+        )
+        self.assertEqual(stale_consume.returncode, 4, stale_consume.stdout)
+        err = decode(stale_consume)
+        self.assertEqual(err["error"], "stale_revision")
+        still = decode(run_store(self.data_dir, "get", {"activity_id": activity["id"]}))
+        self.assertEqual(still["current"]["summary"], "Published lantern v1")
+        self.assertEqual(still["revision"], 1)
+        self.assertEqual(still["draft"]["summary"], "New draft after discard")
+        self.assertEqual(still["draft"]["revision"], recreated["draft"]["revision"])
 
 
 if __name__ == "__main__":

@@ -45,6 +45,9 @@ ShellRoot {
   property int durableDraftRevision: 0
   property string dirtyCreateDraft: "Draft that must not vanish on create"
   property string agentSummary: "Agent published while the lantern draft was open"
+  property string overlapNavDraft: "overlap-autosave-nav-v2"
+  property string overlapSaveText: "explicit-save-behind-autosave"
+  property string overlapDiscardText: "typed-during-discard"
   property bool externalDone: false
   property var qmlErrors: []
 
@@ -90,6 +93,10 @@ ShellRoot {
       draftRevision: p.draftRevision || 0,
       draftStatus: p.draftStatus || "",
       conflictPrompt: !!p.conflictPrompt,
+      draftBaseRevision: p.draftBaseRevision || 0,
+      editSequence: p.editSequence || 0,
+      observedRevision: p.observedRevision || 0,
+      navBlockedReason: p.navBlockedReason || "",
       hasActivity: p.hasActivity,
       hasCurrent: p.hasCurrent,
       revision: p.revision,
@@ -208,7 +215,7 @@ ShellRoot {
   }
 
   Timer {
-    interval: 90000
+    interval: 120000
     running: true
     repeat: false
     onTriggered: fail("watchdog timeout at step " + step)
@@ -1090,27 +1097,72 @@ ShellRoot {
     if (step === 42) {
       if (!externalDone)
         return
-      p.saveCheckpoint()
+      snapshots.push(snap("external-published"))
+      panelLoader.active = false
       step = 43
       stepTicks = 0
       return
     }
 
     if (step === 43) {
+      if (panelLoader.item)
+        return
+      panelLoader.active = true
+      step = 44
+      stepTicks = 0
+      return
+    }
+
+    if (step === 44) {
+      if (panelLoader.status === Loader.Error) {
+        fail("Panel.qml failed to reload before old-base save")
+        return
+      }
+      if (panelLoader.status !== Loader.Ready || !panelObj())
+        return
+      step = 45
+      stepTicks = 0
+      return
+    }
+
+    if (step === 45) {
+      p = panelObj()
+      if (!idle())
+        return
+      if (stepTicks < 20)
+        return
+      if (!p.hasDraft) {
+        fail("recreate after external publish lost the draft")
+        return
+      }
+      if (!p.current || p.current.summary !== agentSummary) {
+        fail("recreate after external publish lost the newer publication")
+        return
+      }
+      if (p.editSummary !== dirtyCreateDraft) {
+        fail("recreate after external publish lost editor draft")
+        return
+      }
+      snapshots.push(snap("recreated-old-base"))
+      p.saveCheckpoint()
+      step = 46
+      stepTicks = 0
+      return
+    }
+
+    if (step === 46) {
       if (!idle())
         return
       if (!p.conflictPrompt) {
-        fail("native conflict prompt missing")
+        fail("recreate old-base save did not conflict")
         return
       }
-      if (!p.current || p.current.summary !== agentSummary)
+      if (p.current.summary !== agentSummary) {
+        fail("stale save overwrote the newer publication")
         return
+      }
       if (p.editSummary !== dirtyCreateDraft) {
         fail("stale save blanked the draft")
-        return
-      }
-      if (p.current.summary === dirtyCreateDraft) {
-        fail("stale save overwrote the newer publication")
         return
       }
       snapshots.push(snap("conflict"))
@@ -1119,18 +1171,36 @@ ShellRoot {
         fail("keep editing left the conflict prompt")
         return
       }
-      if (p.editSummary !== dirtyCreateDraft) {
-        fail("keep editing lost the draft")
-        return
-      }
       snapshots.push(snap("conflict-keep"))
-      p.resolveConflictSave()
-      step = 44
+      p.saveCheckpoint()
+      step = 47
       stepTicks = 0
       return
     }
 
-    if (step === 44) {
+    if (step === 47) {
+      if (!idle())
+        return
+      if (!p.conflictPrompt) {
+        fail("keep-editing retry overwrote publication")
+        return
+      }
+      if (p.current.summary !== agentSummary) {
+        fail("keep-editing retry overwrote the newer publication")
+        return
+      }
+      if (p.editSummary !== dirtyCreateDraft) {
+        fail("keep-editing retry lost the draft")
+        return
+      }
+      snapshots.push(snap("conflict-keep-retry"))
+      p.resolveConflictSave()
+      step = 48
+      stepTicks = 0
+      return
+    }
+
+    if (step === 48) {
       if (!idle())
         return
       if (p.lastError !== "") {
@@ -1150,6 +1220,123 @@ ShellRoot {
         return
       }
       snapshots.push(snap("conflict-resolved"))
+      if (!p.expanded)
+        p.toggleView()
+      if (!p.showArchived)
+        p.toggleArchived()
+      step = 49
+      stepTicks = 0
+      return
+    }
+
+    if (step === 49) {
+      if (!idle())
+        return
+      p.editSummary = "overlap-autosave-nav-v1"
+      p.markUserEdit()
+      p.saveDraft()
+      p.editSummary = overlapNavDraft
+      p.markUserEdit()
+      p.switchActivity(activityBId)
+      step = 50
+      stepTicks = 0
+      return
+    }
+
+    if (step === 50) {
+      if (!idle())
+        return
+      if (p.editSummary === "overlap-autosave-nav-v1" && p.activity.id === activityId) {
+        fail("delayed autosave ack dropped newer keystrokes")
+        return
+      }
+      if (p.activity.id === activityBId) {
+        p.switchActivity(activityId)
+        step = 51
+        stepTicks = 0
+        return
+      }
+      if (p.activity.id !== activityId) {
+        fail("overlap-autosave-nav left an unexpected activity")
+        return
+      }
+      if (p.navBlockedReason && p.navBlockedReason !== "")
+        return
+      p.switchActivity(activityBId)
+      step = 51
+      stepTicks = 0
+      return
+    }
+
+    if (step === 51) {
+      if (!idle())
+        return
+      if (p.activity.id === activityBId) {
+        p.switchActivity(activityId)
+        return
+      }
+      if (p.activity.id !== activityId) {
+        fail("overlap-autosave-nav could not return to A")
+        return
+      }
+      if (p.editSummary !== overlapNavDraft) {
+        fail("overlap-autosave-nav lost newer keystrokes: " + p.editSummary)
+        return
+      }
+      snapshots.push(snap("overlap-autosave-nav"))
+      p.editSummary = "queued-autosave"
+      p.markUserEdit()
+      p.saveDraft()
+      p.editSummary = overlapSaveText
+      p.markUserEdit()
+      p.saveCheckpoint()
+      p.editSummary = overlapSaveText
+      p.markUserEdit()
+      p.saveDraft()
+      step = 52
+      stepTicks = 0
+      return
+    }
+
+    if (step === 52) {
+      if (!idle())
+        return
+      if (p.current.summary !== overlapSaveText) {
+        fail("explicit save behind autosave was dropped")
+        return
+      }
+      snapshots.push(snap("explicit-save-behind-autosave"))
+      p.editSummary = "draft-before-discard"
+      p.markUserEdit()
+      p.saveDraft()
+      step = 53
+      stepTicks = 0
+      return
+    }
+
+    if (step === 53) {
+      if (!idle())
+        return
+      p.discardDraft()
+      p.editSummary = overlapDiscardText
+      p.markUserEdit()
+      step = 54
+      stepTicks = 0
+      return
+    }
+
+    if (step === 54) {
+      if (!idle())
+        return
+      if (p.editSummary !== overlapDiscardText) {
+        fail("obsolete discard clobbered editor")
+        return
+      }
+      if (p.current.summary !== overlapSaveText) {
+        fail("obsolete discard mutated the published checkpoint")
+        return
+      }
+      snapshots.push(snap("obsolete-discard-protected"))
       succeed()
     }
   }

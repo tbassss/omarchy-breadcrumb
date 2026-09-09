@@ -24,7 +24,10 @@ Added for #5:
 10. `saveDraft()` persists editor text without appending history. Compact still shows the published checkpoint and `hasDraft` / "Unsaved draft".
 11. Destroy + recreate recovers the durable draft into the editor; published `current.*` is unchanged; history count is unchanged; recovered hydration does not bump `draftRevision`.
 12. Activity switch and create persist the current draft first (no in-memory Save/Discard/Cancel prompt). Returning to A recovers the draft. Create while a draft exists must not discard A's durable draft.
-13. An external `publish` through the store CLI (internal test seam, not the public agent CLI) while a draft exists: Save checkpoint shows `conflictPrompt`, keeps the draft, and does not overwrite the newer publication. Deliberate resolution publishes the draft against the observed current revision.
+13. An external `publish` through the store CLI (internal test seam, not the public agent CLI) while a draft exists: recreate, then ordinary Save checkpoint shows `conflictPrompt`, keeps the draft, and does not overwrite the newer publication. Keep editing then ordinary Save still conflicts. Deliberate resolution publishes the draft against the observed current revision.
+14. Same-tick delayed `saveDraft` + newer keystrokes + `switchActivity`: newer text is persisted or navigation stays deferred with visible state; v1 ack must not drop v2.
+15. Explicit `saveCheckpoint` queued behind an in-flight autosave is not dropped when another `saveDraft` is issued.
+16. `discardDraft` overlapping later keystrokes must not clobber the editor.
 
 These are native evidence. A Python source-contract pass is not a substitute. They are not live bar / real KeyboardPanel layer-shell acceptance.
 

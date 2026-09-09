@@ -131,15 +131,42 @@ class TestPluginContract(unittest.TestCase):
         self.assertNotIn("onTextEdited: root.dirty = true", qml)
         save_idx = qml.index("function saveCheckpoint()")
         save_chunk = qml[save_idx : save_idx + 900]
-        self.assertIn("expected_revision: root.revision", save_chunk)
+        self.assertIn("draftBaseRevision", save_chunk)
         self.assertIn("consume_draft_revision", save_chunk)
         switch_idx = qml.index("function switchActivity(")
         switch_chunk = qml[switch_idx : switch_idx + 800]
-        self.assertIn("pendingAutosave", switch_chunk)
+        self.assertIn("needsDraftFlush()", switch_chunk)
         self.assertIn("saveDraft()", switch_chunk)
         # Honest ack: Draft saved is not the in-flight label.
         self.assertIn('draftStatus === "saved"', qml)
         self.assertIn('draftStatus = "saving"', qml)
+
+    def test_ordinary_save_cas_acknowledged_draft_base_not_refreshed_revision(self) -> None:
+        qml = PANEL.read_text(encoding="utf-8")
+        save_idx = qml.index("function saveCheckpoint()")
+        resolve_idx = qml.index("function resolveConflictSave()")
+        save_chunk = qml[save_idx:resolve_idx]
+        self.assertIn("draftBaseRevision", save_chunk)
+        self.assertNotIn("expected_revision: root.revision", save_chunk)
+        resolve_chunk = qml[resolve_idx : resolve_idx + 500]
+        self.assertIn("observedRevision", resolve_chunk)
+
+    def test_scheduler_identities_and_no_lossy_queue(self) -> None:
+        qml = PANEL.read_text(encoding="utf-8")
+        self.assertIn("editSequence", qml)
+        self.assertIn("function enqueueOp(", qml)
+        self.assertIn("function pumpQueue(", qml)
+        self.assertIn("inFlight", qml)
+        self.assertNotIn('if (action === "save-draft" || root.queuedAction === "")', qml)
+        handler_idx = qml.index("function handleStoreResult(")
+        handler = qml[handler_idx:]
+        save_draft_idx = handler.index('action === "save-draft"')
+        next_action = handler.find('action === "', save_draft_idx + 10)
+        save_draft_handler = handler[save_draft_idx:next_action if next_action > 0 else save_draft_idx + 1800]
+        self.assertNotIn("discard-draft", save_draft_handler)
+        discard_idx = handler.index('action === "discard-draft"')
+        discard_handler = handler[discard_idx : discard_idx + 900]
+        self.assertIn("editSequence", discard_handler)
 
     def test_native_harness_asserts_recreate_editor_and_draft_preserve(self) -> None:
         """The native qs assertion must exist in-repo. This is not a substitute for running it."""
@@ -167,7 +194,7 @@ class TestPluginContract(unittest.TestCase):
         self.assertIn("compact showed draft text instead of published checkpoint", qml)
         self.assertIn("compact missing unsaved draft indicator", qml)
         self.assertIn("conflictPrompt", qml)
-        self.assertIn("native conflict prompt missing", qml)
+        self.assertIn("recreate old-base save did not conflict", qml)
         self.assertIn("publish", qml)
         dropdown = (ROOT / "tests" / "native" / "harness" / "qs" / "Ui" / "Dropdown.qml").read_text(encoding="utf-8")
         self.assertIn("function selectCurrent(", dropdown)
@@ -177,6 +204,11 @@ class TestPluginContract(unittest.TestCase):
         self.assertIn("picker desync after completed switch", qml)
         self.assertIn("picker desync after later activity change", qml)
         self.assertIn("create while draft discarded A's durable draft", qml)
+        self.assertIn("recreate old-base save did not conflict", qml)
+        self.assertIn("keep-editing retry overwrote publication", qml)
+        self.assertIn("overlap-autosave-nav", qml)
+        self.assertIn("explicit save behind autosave was dropped", qml)
+        self.assertIn("obsolete discard clobbered editor", qml)
 
 
 if __name__ == "__main__":

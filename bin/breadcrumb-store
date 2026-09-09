@@ -221,6 +221,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
                 activity_id TEXT PRIMARY KEY REFERENCES activities(id),
                 revision INTEGER NOT NULL,
                 base_revision INTEGER NOT NULL,
+                live INTEGER NOT NULL DEFAULT 1,
                 summary TEXT NOT NULL,
                 next_step TEXT,
                 context TEXT,
@@ -230,6 +231,11 @@ def init_schema(conn: sqlite3.Connection) -> None:
             )
             """
         )
+        draft_cols = {
+            str(info[1]) for info in conn.execute("PRAGMA table_info(drafts)").fetchall()
+        }
+        if "live" not in draft_cols:
+            conn.execute("ALTER TABLE drafts ADD COLUMN live INTEGER NOT NULL DEFAULT 1")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS draft_links (
@@ -642,10 +648,20 @@ def base_revision_value(value: object) -> int:
     return value
 
 
+def observed_revision_value(value: object) -> int:
+    if value is None:
+        fail("validation", "observed_revision is required")
+    if isinstance(value, bool) or not isinstance(value, int):
+        fail("validation", "observed_revision must be an integer")
+    if value < 0:
+        fail("validation", "observed_revision cannot be negative")
+    return value
+
+
 def load_draft(conn: sqlite3.Connection, activity_id: str) -> sqlite3.Row | None:
     return conn.execute(
         """
-        SELECT activity_id, revision, base_revision, summary, next_step, context, state, author, updated_at
+        SELECT activity_id, revision, base_revision, live, summary, next_step, context, state, author, updated_at
         FROM drafts
         WHERE activity_id = ?
         """,
@@ -693,9 +709,28 @@ def replace_draft_links(conn: sqlite3.Connection, activity_id: str, links: list[
         )
 
 
-def delete_draft(conn: sqlite3.Connection, activity_id: str) -> None:
+def draft_is_live(row: sqlite3.Row | None) -> bool:
+    if row is None:
+        return False
+    keys = row.keys()
+    if "live" not in keys:
+        return True
+    return int(row["live"]) == 1
+
+
+def tombstone_draft(conn: sqlite3.Connection, activity_id: str, current_revision: int) -> int:
+    generation = current_revision + 1
     conn.execute("DELETE FROM draft_links WHERE activity_id = ?", (activity_id,))
-    conn.execute("DELETE FROM drafts WHERE activity_id = ?", (activity_id,))
+    conn.execute(
+        """
+        UPDATE drafts
+        SET revision = ?, live = 0, summary = '', next_step = '', context = '',
+            state = 'ready', author = '', updated_at = ?
+        WHERE activity_id = ?
+        """,
+        (generation, utc_now(), activity_id),
+    )
+    return generation
 
 
 def current_draft_revision(conn: sqlite3.Connection, activity_id: str) -> int:
@@ -703,6 +738,13 @@ def current_draft_revision(conn: sqlite3.Connection, activity_id: str) -> int:
     if row is None:
         return 0
     return int(row["revision"])
+
+
+def live_draft_payload(conn: sqlite3.Connection, activity_id: str) -> dict | None:
+    row = load_draft(conn, activity_id)
+    if not draft_is_live(row):
+        return None
+    return draft_payload(conn, row)
 
 
 def validate_draft_links(raw: object) -> list[dict]:
@@ -744,6 +786,12 @@ def cmd_save_draft(conn: sqlite3.Connection, payload: dict) -> None:
     activity_id = require_activity_id(payload.get("activity_id"))
     expected = expected_draft_revision_value(payload.get("expected_draft_revision"))
     base_revision = base_revision_value(payload.get("base_revision"))
+    acknowledge_base = payload.get("acknowledge_base", False)
+    if acknowledge_base not in (True, False):
+        fail("validation", "acknowledge_base must be a boolean")
+    observed_revision = None
+    if acknowledge_base:
+        observed_revision = observed_revision_value(payload.get("observed_revision"))
     state = validate_state(payload.get("state"))
     summary = plain_text(
         payload.get("summary"),
@@ -768,24 +816,52 @@ def cmd_save_draft(conn: sqlite3.Connection, payload: dict) -> None:
         if activity is None:
             conn.execute("ROLLBACK")
             fail("validation", "Unknown activity")
-        current = current_draft_revision(conn, activity_id)
+        row = load_draft(conn, activity_id)
+        current = 0 if row is None else int(row["revision"])
+        live = draft_is_live(row)
         if current != expected:
             conn.execute("ROLLBACK")
             fail(
                 "stale_revision",
                 "A newer draft was saved. Reload before saving the draft.",
-                {"current_draft_revision": current, "expected_draft_revision": expected},
+                {
+                    "current_draft_revision": current,
+                    "expected_draft_revision": expected,
+                    "current_base_revision": int(row["base_revision"]) if row is not None else 0,
+                },
+            )
+        if acknowledge_base:
+            published = latest_revision(conn, activity_id)
+            if observed_revision != published:
+                conn.execute("ROLLBACK")
+                fail(
+                    "stale_revision",
+                    "A newer checkpoint was saved. Reload before acknowledging.",
+                    {"current_revision": published, "observed_revision": observed_revision},
+                )
+            base_revision = observed_revision
+        elif live and int(row["base_revision"]) != base_revision:
+            conn.execute("ROLLBACK")
+            fail(
+                "stale_revision",
+                "This draft is still based on an earlier checkpoint. Resolve the newer publication before changing the base.",
+                {
+                    "current_draft_revision": current,
+                    "current_base_revision": int(row["base_revision"]),
+                    "expected_base_revision": base_revision,
+                },
             )
         revision = current + 1
         updated_at = utc_now()
         conn.execute(
             """
             INSERT INTO drafts(
-                activity_id, revision, base_revision, summary, next_step, context, state, author, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                activity_id, revision, base_revision, live, summary, next_step, context, state, author, updated_at
+            ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(activity_id) DO UPDATE SET
                 revision = excluded.revision,
                 base_revision = excluded.base_revision,
+                live = 1,
                 summary = excluded.summary,
                 next_step = excluded.next_step,
                 context = excluded.context,
@@ -811,7 +887,7 @@ def cmd_save_draft(conn: sqlite3.Connection, payload: dict) -> None:
         conn.execute("ROLLBACK")
         fail("io", f"Could not save the draft: {exc}")
     row = load_draft(conn, activity_id)
-    ok({"draft": draft_payload(conn, row)})
+    ok({"draft": draft_payload(conn, row), "draft_generation": int(row["revision"])})
 
 
 def cmd_discard_draft(conn: sqlite3.Connection, payload: dict) -> None:
@@ -831,14 +907,17 @@ def cmd_discard_draft(conn: sqlite3.Connection, payload: dict) -> None:
                 "A newer draft was saved. Reload before discarding.",
                 {"current_draft_revision": current, "expected_draft_revision": expected},
             )
-        delete_draft(conn, activity_id)
+        row = load_draft(conn, activity_id)
+        generation = current
+        if row is not None and draft_is_live(row):
+            generation = tombstone_draft(conn, activity_id, current)
         conn.execute("COMMIT")
     except SystemExit:
         raise
     except sqlite3.Error as exc:
         conn.execute("ROLLBACK")
         fail("io", f"Could not discard the draft: {exc}")
-    ok({"draft": None})
+    ok({"draft": None, "draft_generation": generation})
 
 
 def cmd_get(conn: sqlite3.Connection, payload: dict) -> None:
@@ -863,6 +942,7 @@ def cmd_get(conn: sqlite3.Connection, payload: dict) -> None:
                 "activities": listed,
                 "history": {"entries": [], "has_more": False, "next_before_revision": None},
                 "draft": None,
+                "draft_generation": 0,
             }
         )
         return
@@ -876,8 +956,8 @@ def cmd_get(conn: sqlite3.Connection, payload: dict) -> None:
             fail("io", f"Could not save the selected activity: {exc}")
     history = history_page(conn, activity["id"], HISTORY_PAGE_DEFAULT, None)
     current_row = latest_checkpoint(conn, activity["id"])
-    draft_row = load_draft(conn, activity["id"])
-    draft = draft_payload(conn, draft_row) if draft_row is not None else None
+    draft = live_draft_payload(conn, activity["id"])
+    draft_generation = current_draft_revision(conn, activity["id"])
     base = {
         "activity": activity_payload(activity),
         "view": view,
@@ -885,6 +965,7 @@ def cmd_get(conn: sqlite3.Connection, payload: dict) -> None:
         "activities": listed,
         "history": history,
         "draft": draft,
+        "draft_generation": draft_generation,
     }
     if current_row is None:
         ok({"state": "empty", "current": None, "revision": 0, **base})
@@ -929,6 +1010,23 @@ def cmd_publish(conn: sqlite3.Connection, payload: dict) -> None:
                 "A newer checkpoint was saved. Reload before saving.",
                 {"current_revision": current, "expected_revision": expected},
             )
+        if consume_draft is not None:
+            draft_row = load_draft(conn, activity_id)
+            draft_gen = 0 if draft_row is None else int(draft_row["revision"])
+            live = draft_is_live(draft_row)
+            consume_ok = (consume_draft == 0 and draft_gen == 0) or (live and draft_gen == consume_draft)
+            if not consume_ok:
+                conn.execute("ROLLBACK")
+                fail(
+                    "stale_revision",
+                    "The draft changed. Reload before saving.",
+                    {
+                        "current_revision": current,
+                        "expected_revision": expected,
+                        "current_draft_revision": draft_gen,
+                        "expected_draft_revision": consume_draft,
+                    },
+                )
         checkpoint_id = str(uuid.uuid4())
         revision = current + 1
         saved_at = utc_now()
@@ -948,8 +1046,8 @@ def cmd_publish(conn: sqlite3.Connection, payload: dict) -> None:
                 """,
                 (checkpoint_id, position, link["label"], link["kind"], link["target"]),
             )
-        if consume_draft is not None and current_draft_revision(conn, activity_id) == consume_draft:
-            delete_draft(conn, activity_id)
+        if consume_draft is not None and consume_draft > 0:
+            tombstone_draft(conn, activity_id, consume_draft)
         conn.execute("COMMIT")
     except SystemExit:
         raise
@@ -972,7 +1070,12 @@ def cmd_publish(conn: sqlite3.Connection, payload: dict) -> None:
         (checkpoint_id,),
     ).fetchone()
     current = checkpoint_payload(conn, row)
-    ok({"current": current, "revision": current["revision"], "state": "ready"})
+    ok({
+        "current": current,
+        "revision": current["revision"],
+        "state": "ready",
+        "draft_generation": current_draft_revision(conn, activity_id),
+    })
 
 
 def cmd_restore(conn: sqlite3.Connection, payload: dict) -> None:

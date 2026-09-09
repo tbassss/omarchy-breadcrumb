@@ -33,11 +33,14 @@ Panel {
   property int autosaveGeneration: 0
   property bool pendingAutosave: false
   property bool conflictPrompt: false
+  property int observedRevision: 0
+  property int editSequence: 0
+  property int requestIdCounter: 0
+  property var opQueue: []
+  property var inFlight: null
+  property string navBlockedReason: ""
   property string pendingSwitchAfterDraft: ""
   property bool pendingCreateAfterDraft: false
-  property string queuedAction: ""
-  property var queuedPayload: null
-  property var queuedMeta: null
   property string editName: ""
   property string createName: ""
   property string renameName: ""
@@ -148,7 +151,7 @@ Panel {
     } else {
       copyCurrentToEditor()
       root.hasDraft = false
-      root.draftRevision = 0
+      root.draftRevision = body.draft_generation || 0
       root.draftBaseRevision = root.revision
       root.dirty = false
       root.pendingAutosave = false
@@ -221,12 +224,13 @@ Panel {
   function markUserEdit() {
     if (root.hydrating)
       return
+    if (!root.hasDraft)
+      root.draftBaseRevision = root.revision
+    root.editSequence += 1
     root.dirty = true
     root.hasDraft = true
     root.pendingAutosave = true
     root.draftStatus = ""
-    if (root.draftRevision === 0)
-      root.draftBaseRevision = root.revision
     scheduleAutosave()
   }
 
@@ -236,75 +240,149 @@ Panel {
     autosaveTimer.restart()
   }
 
-  function saveDraft() {
-    if (!root.hasActivity)
-      return
-    autosaveTimer.stop()
-    var activityId = root.activity.id
-    var gen = root.autosaveGeneration
-    root.draftStatus = "saving"
-    runStore("save-draft", {
-      activity_id: activityId,
-      expected_draft_revision: root.draftRevision,
-      base_revision: root.draftBaseRevision,
+  function editorDraftPayload() {
+    return {
+      activity_id: root.activity.id,
       summary: root.editSummary,
       next_step: root.editNext,
       context: root.editContext,
       state: root.editState,
       author: root.editAuthor || Model.defaultAuthor(),
       links: collectLinks()
-    }, { generation: gen, activityId: activityId })
+    }
+  }
+
+  function saveDraft() {
+    if (!root.hasActivity)
+      return
+    autosaveTimer.stop()
+    root.draftStatus = "saving"
+    runStore("save-draft", editorDraftPayload(), { editSequence: root.editSequence, activityId: root.activity.id })
   }
 
   function discardDraft() {
     if (!root.hasActivity)
       return
     autosaveTimer.stop()
-    root.autosaveGeneration += 1
+    dropUnsentAutosaves(root.activity.id)
     root.pendingAutosave = false
     root.pendingSwitchAfterDraft = ""
     root.pendingCreateAfterDraft = false
-    runStore("discard-draft", {
-      activity_id: root.activity.id,
-      expected_draft_revision: root.draftRevision
-    })
+    root.navBlockedReason = ""
+    runStore("discard-draft", { activity_id: root.activity.id }, { editSequence: root.editSequence, activityId: root.activity.id })
   }
 
   function abortPendingNav() {
     root.pendingSwitchAfterDraft = ""
     root.pendingCreateAfterDraft = false
+    root.navBlockedReason = ""
     root.syncActivityPicker()
   }
 
-  function drainQueue() {
-    if (!root.queuedAction)
+  function dropUnsentAutosaves(activityId) {
+    var kept = []
+    for (var i = 0; i < root.opQueue.length; i++) {
+      var op = root.opQueue[i]
+      if (!(op.action === "save-draft" && op.activityId === activityId))
+        kept.push(op)
+    }
+    root.opQueue = kept
+  }
+
+  function hasUnsentAutosave(activityId) {
+    for (var i = 0; i < root.opQueue.length; i++) {
+      if (root.opQueue[i].action === "save-draft" && root.opQueue[i].activityId === activityId)
+        return true
+    }
+    return false
+  }
+
+  function enqueueOp(op) {
+    if (op.action === "save-draft") {
+      for (var i = 0; i < root.opQueue.length; i++) {
+        if (root.opQueue[i].action === "save-draft" && root.opQueue[i].activityId === op.activityId) {
+          root.opQueue[i] = op
+          pumpQueue()
+          return
+        }
+      }
+    }
+    root.opQueue.push(op)
+    pumpQueue()
+  }
+
+  function pumpQueue() {
+    if (storeProc.running || root.inFlight)
       return
-    var action = root.queuedAction
-    var payload = root.queuedPayload
-    var meta = root.queuedMeta
-    root.queuedAction = ""
-    root.queuedPayload = null
-    root.queuedMeta = null
-    runStore(action, payload, meta)
+    if (!root.opQueue.length)
+      return
+    var next = root.opQueue[0]
+    var rest = []
+    for (var i = 1; i < root.opQueue.length; i++)
+      rest.push(root.opQueue[i])
+    root.opQueue = rest
+    sendOp(next)
+  }
+
+  function sendOp(op) {
+    var payload = op.payload || {}
+    if (op.action === "save-draft") {
+      payload.expected_draft_revision = root.draftRevision
+      payload.base_revision = root.draftBaseRevision
+      if (op.activityId === (root.activity ? root.activity.id : "")) {
+        payload.summary = root.editSummary
+        payload.next_step = root.editNext
+        payload.context = root.editContext
+        payload.state = root.editState
+        payload.author = root.editAuthor || Model.defaultAuthor()
+        payload.links = collectLinks()
+        op.editSequence = root.editSequence
+      }
+    } else if (op.action === "discard-draft") {
+      payload.expected_draft_revision = root.draftRevision
+    } else if (op.action === "publish") {
+      if (op.activityId === (root.activity ? root.activity.id : "")) {
+        payload.summary = root.editSummary
+        payload.next_step = root.editNext
+        payload.context = root.editContext
+        payload.state = root.editState
+        payload.author = root.editAuthor || Model.defaultAuthor()
+        payload.links = collectLinks()
+      }
+      if (op.resolve)
+        payload.expected_revision = root.observedRevision
+      else if (root.hasDraft || root.dirty)
+        payload.expected_revision = root.draftBaseRevision
+      else
+        payload.expected_revision = root.revision
+      if (root.hasDraft)
+        payload.consume_draft_revision = root.draftRevision
+      else
+        delete payload.consume_draft_revision
+    }
+    op.payload = payload
+    root.inFlight = op
+    root.pendingAction = op.action
+    root.pendingMeta = op
+    if (root.loadState !== "error")
+      root.loadState = root.loadState === "ready" || root.loadState === "empty" ? root.loadState : "loading"
+    if (op.action === "get" && !root.hasCurrent && !root.hasActivity)
+      root.loadState = "loading"
+    storeProc.command = ["/usr/bin/python3", root.storePath, op.action, JSON.stringify(payload || {})]
+    storeProc.running = true
   }
 
   function runStore(action, payload, meta) {
-    if (storeProc.running) {
-      if (action === "save-draft" || root.queuedAction === "") {
-        root.queuedAction = action
-        root.queuedPayload = payload
-        root.queuedMeta = meta || {}
-      }
-      return
-    }
-    root.pendingAction = action
-    root.pendingMeta = meta || {}
-    if (root.loadState !== "error")
-      root.loadState = root.loadState === "ready" || root.loadState === "empty" ? root.loadState : "loading"
-    if (action === "get" && !root.hasCurrent && !root.hasActivity)
-      root.loadState = "loading"
-    storeProc.command = ["/usr/bin/python3", root.storePath, action, JSON.stringify(payload || {})]
-    storeProc.running = true
+    meta = meta || {}
+    enqueueOp({
+      requestId: ++root.requestIdCounter,
+      action: action,
+      kind: action,
+      activityId: meta.activityId || (root.activity ? root.activity.id : ""),
+      editSequence: meta.editSequence !== undefined ? meta.editSequence : root.editSequence,
+      payload: payload || {},
+      resolve: !!meta.resolve
+    })
   }
 
   function refresh() {
@@ -322,8 +400,9 @@ Panel {
   }
 
   function createActivity() {
-    if (root.pendingAutosave) {
+    if (root.pendingAutosave || root.dirty) {
       root.pendingCreateAfterDraft = true
+      root.navBlockedReason = "Saving draft…"
       saveDraft()
       return
     }
@@ -334,19 +413,25 @@ Panel {
     if (!root.hasActivity)
       return
     autosaveTimer.stop()
-    var payload = {
-      activity_id: root.activity.id,
-      expected_revision: root.revision,
-      summary: root.editSummary,
-      next_step: root.editNext,
-      context: root.editContext,
-      state: root.editState,
-      author: root.editAuthor || Model.defaultAuthor(),
-      links: collectLinks()
-    }
+    var payload = editorDraftPayload()
+    payload.expected_revision = (root.hasDraft || root.dirty) ? root.draftBaseRevision : root.revision
     if (root.hasDraft)
       payload.consume_draft_revision = root.draftRevision
-    runStore("publish", payload)
+    runStore("publish", payload, {
+      editSequence: root.editSequence,
+      activityId: root.activity.id,
+      resolve: false
+    })
+  }
+
+  function needsDraftFlush() {
+    if (!root.hasActivity)
+      return false
+    if (root.dirty || root.pendingAutosave)
+      return true
+    if (root.inFlight && root.inFlight.action === "save-draft" && root.inFlight.activityId === root.activity.id)
+      return true
+    return hasUnsentAutosave(root.activity.id)
   }
 
   function switchActivity(id) {
@@ -354,11 +439,14 @@ Panel {
       return
     if (root.activity && id === root.activity.id) {
       root.pendingSwitchAfterDraft = ""
+      root.navBlockedReason = ""
       root.syncActivityPicker()
       return
     }
-    if (root.pendingAutosave) {
+    if (needsDraftFlush()) {
       root.pendingSwitchAfterDraft = id
+      root.navBlockedReason = "Saving draft…"
+      root.draftStatus = "saving"
       saveDraft()
       root.syncActivityPicker()
       return
@@ -368,14 +456,25 @@ Panel {
 
   function doSwitch(id) {
     autosaveTimer.stop()
-    root.autosaveGeneration += 1
     root.pendingSwitchAfterDraft = ""
+    root.navBlockedReason = ""
     runStore("get", { activity_id: id, include_archived: root.showArchived })
   }
 
   function resolveConflictSave() {
     root.conflictPrompt = false
-    saveCheckpoint()
+    if (!root.hasActivity)
+      return
+    autosaveTimer.stop()
+    var payload = editorDraftPayload()
+    payload.expected_revision = root.observedRevision
+    if (root.hasDraft)
+      payload.consume_draft_revision = root.draftRevision
+    runStore("publish", payload, {
+      editSequence: root.editSequence,
+      activityId: root.activity.id,
+      resolve: true
+    })
   }
 
   function resolveConflictLoadPublished() {
@@ -442,19 +541,40 @@ Panel {
 
   function clearDraftState() {
     root.hasDraft = false
-    root.draftRevision = 0
     root.draftBaseRevision = root.revision
     root.pendingAutosave = false
     root.draftStatus = ""
     root.dirty = false
     root.conflictPrompt = false
-    root.autosaveGeneration += 1
+    root.navBlockedReason = ""
+  }
+
+  function maybeFinishDeferredNav() {
+    if (root.pendingSwitchAfterDraft) {
+      if (root.dirty || root.pendingAutosave)
+        return false
+      var switchId = root.pendingSwitchAfterDraft
+      root.pendingSwitchAfterDraft = ""
+      root.navBlockedReason = ""
+      Qt.callLater(function() { root.doSwitch(switchId) })
+      return true
+    }
+    if (root.pendingCreateAfterDraft) {
+      if (root.dirty || root.pendingAutosave)
+        return false
+      root.pendingCreateAfterDraft = false
+      root.navBlockedReason = ""
+      Qt.callLater(function() { root.actuallyCreate() })
+      return true
+    }
+    return false
   }
 
   function handleStoreResult(exitCode, raw) {
     var body = Model.parseResponse(raw)
-    var action = root.pendingAction
-    var meta = root.pendingMeta || {}
+    var op = root.inFlight || root.pendingMeta || {}
+    var action = op.action || root.pendingAction
+    root.inFlight = null
     if (!body.ok) {
       root.lastError = body.message || "Could not complete that action."
       if (action === "save-draft") {
@@ -463,6 +583,8 @@ Panel {
       }
       if (action === "publish" && body.error === "stale_revision") {
         root.conflictPrompt = true
+        if (body.current_revision !== undefined)
+          root.observedRevision = body.current_revision
         Qt.callLater(function() { root.refresh() })
       }
       if (action === "get") {
@@ -476,41 +598,39 @@ Panel {
     }
     root.lastError = ""
     if (action === "save-draft") {
-      var sameGen = meta.generation === root.autosaveGeneration
-      var sameActivity = meta.activityId && root.activity && meta.activityId === root.activity.id
-      if (!sameGen) {
-        if (body.draft && body.draft.revision) {
-          runStore("discard-draft", {
-            activity_id: meta.activityId,
-            expected_draft_revision: body.draft.revision
-          })
-        }
-        return
-      }
+      var sameActivity = op.activityId && root.activity && op.activityId === root.activity.id
       if (sameActivity && body.draft) {
         root.draftRevision = body.draft.revision || 0
         root.draftBaseRevision = body.draft.base_revision || root.draftBaseRevision
         root.hasDraft = true
-        root.pendingAutosave = false
-        root.draftStatus = "saved"
+        if (op.editSequence === root.editSequence) {
+          root.pendingAutosave = false
+          root.draftStatus = "saved"
+          root.dirty = false
+        } else {
+          root.pendingAutosave = true
+          root.draftStatus = ""
+          Qt.callLater(function() { root.saveDraft() })
+        }
       }
-      if (root.pendingSwitchAfterDraft) {
-        var switchId = root.pendingSwitchAfterDraft
-        root.pendingSwitchAfterDraft = ""
-        Qt.callLater(function() { root.doSwitch(switchId) })
-        return
-      }
-      if (root.pendingCreateAfterDraft) {
-        root.pendingCreateAfterDraft = false
-        Qt.callLater(function() { root.actuallyCreate() })
-        return
-      }
+      maybeFinishDeferredNav()
       return
     }
     if (action === "discard-draft") {
+      if (body.draft_generation !== undefined)
+        root.draftRevision = body.draft_generation
+      var discardSameActivity = op.activityId && root.activity && op.activityId === root.activity.id
+      if (!discardSameActivity)
+        return
+      if (op.editSequence !== root.editSequence) {
+        root.hasDraft = true
+        root.dirty = true
+        root.pendingAutosave = true
+        Qt.callLater(function() { root.saveDraft() })
+        return
+      }
       beginHydrate()
       root.hasDraft = false
-      root.draftRevision = 0
       root.draftBaseRevision = root.revision
       root.pendingAutosave = false
       root.draftStatus = ""
@@ -528,7 +648,8 @@ Panel {
         revision: 0,
         state: "empty",
         view: root.view,
-        draft: null
+        draft: null,
+        draft_generation: 0
       })
       if (root.hasActivity) {
         Qt.callLater(function() {
@@ -542,15 +663,19 @@ Panel {
       return
     }
     if (action === "publish" || action === "restore") {
-      if (action === "publish")
+      if (action === "publish") {
+        if (body.draft_generation !== undefined)
+          root.draftRevision = body.draft_generation
         clearDraftState()
+      }
       applySnapshot({
         activity: root.activity,
         current: body.current || null,
         revision: body.revision,
         view: root.view,
         state: body.state,
-        draft: null
+        draft: null,
+        draft_generation: root.draftRevision
       })
       Qt.callLater(function() { root.refresh() })
       return
@@ -726,6 +851,16 @@ Panel {
           visible: root.lastError !== ""
           text: root.lastError
           color: root.urgent
+          wrapMode: Text.WordWrap
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          textFormat: Text.PlainText
+        }
+        Text {
+          width: parent.width
+          visible: root.navBlockedReason !== ""
+          text: root.navBlockedReason
+          color: root.fg
           wrapMode: Text.WordWrap
           font.family: root.fontFamily
           font.pixelSize: Style.font.bodySmall
@@ -1293,7 +1428,8 @@ Panel {
       root.handleStoreResult(exitCode, storeOut.text)
       root.pendingAction = ""
       root.pendingOpen = null
-      root.drainQueue()
+      root.inFlight = null
+      root.pumpQueue()
     }
   }
 }

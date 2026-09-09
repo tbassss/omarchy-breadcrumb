@@ -112,7 +112,7 @@ env -i \
   BREADCRUMB_RESULTS="$RESULTS" \
   OMARCHY_PATH=/usr/share/omarchy \
   PYTHONDONTWRITEBYTECODE=1 \
-  timeout 90 /usr/bin/qs -p "$WORKDIR/harness/shell.qml" --no-color -v \
+  timeout 120 /usr/bin/qs -p "$WORKDIR/harness/shell.qml" --no-color -v \
   >"$QS_STDOUT" 2>"$QS_STDERR"
 QS_RC=$?
 set -e

@@ -16,25 +16,43 @@ Unchanged from issues #3 and #4, inspected read-only on the-cave:
 - Toolchain on the-cave: `/usr/bin/python3` 3.14, `/usr/bin/qs` Quickshell 0.3.1, Qt 6.11.2, `omarchy plugin validate`.
 - Known full-host `qs.Ui.Button.enabled` mismatch remains issue #7. Package Button is not patched. Live host acceptance is not claimed.
 
+## Repair (review blockers on 52541e3)
+
+Recorded before production edits. Three identities stay distinct for the whole slice:
+
+| Identity | Owner | Advances when |
+|---|---|---|
+| Published checkpoint `revision` | `checkpoints` row | Successful `publish` / `restore` |
+| Durable draft **generation** | Per-activity head, including empty/tombstone | Every successful `save-draft`, `discard-draft`, and matching consume |
+| Editor **edit sequence** | UI session | Genuine user keystroke / dirty |
+| Immutable request snapshot | One queued/in-flight op | Captured at enqueue for payload + activity + edit sequence; CAS tokens bound at send |
+
+Ordinary draft save CAS-es the **acknowledged draft base**. Only an explicit reviewed resolution may advance that base, and that path itself CAS-es the **observed** published revision. Close/reopen and Keep editing must not adopt `root.revision` after refresh.
+
+Draft delete/consume must not physically remove the head row. Generation never restarts at 1. Stale discard/consume against an old generation cannot ABA-delete a newer live draft. Existing v1 files gain an additive `live` column; live payload bytes are not rewritten on migrate.
+
+UI store mutations go through an explicit FIFO scheduler. Unsent autosaves for the **same activity** may coalesce. Explicit Save, discard, and navigation are never silently dropped. Acks match the exact saved edit sequence. Newer editor text is preserved. Navigation waits for persist or is deferred with visible state. Stale responses never clear/overwrite the editor and never issue a compensating discard.
+
 ## Storage (additive, compatibility)
 
 - Python 3 stdlib `sqlite3` only. Store **schema version remains 1**.
-- Existing v1 files open in place. `CREATE TABLE IF NOT EXISTS` adds `drafts` and `draft_links`. No rewrite of checkpoints or activities.
+- Existing v1 files open in place. `CREATE TABLE IF NOT EXISTS` adds `drafts` and `draft_links`. Existing draft tables get `live INTEGER NOT NULL DEFAULT 1` if missing. No rewrite of checkpoints, activities, or live draft payloads.
 - Default directory, `breadcrumb.sqlite` permissions, `PRAGMA journal_mode=DELETE`, `PRAGMA synchronous=FULL`, `BEGIN IMMEDIATE`, and `busy_timeout` are unchanged.
 - Drafts are **not** checkpoints. Autosave never `INSERT`s into `checkpoints` / history.
 
 ### Explicit draft model
 
-One draft row per activity:
+One **head row** per activity, retained through empty/tombstone states:
 
 | Field | Role |
 |---|---|
 | `activity_id` | Stable activity UUID (PK). |
-| `revision` | Draft version, starts at 1. CAS token. Distinct from published checkpoint `revision`. |
-| `base_revision` | Published checkpoint revision the user last acknowledged when this draft began or was last resolved. Autosave does **not** rebase this after an external publish. |
-| summary / next_step / context / state / author / updated_at / links | Editor payload. Incomplete drafts are allowed (empty summary/next_step). Length and NUL rules still apply. Link *targets* are stored for recovery; publish still validates links. |
+| `revision` | Monotonic **generation** (CAS token). Starts at 1 on first save. Discard/consume increment it and leave a tombstone (`live=0`). Never reset to 0/1 while the row exists. Distinct from published checkpoint `revision`. |
+| `live` | `1` = payload is an outstanding draft. `0` = empty/tombstone. `get` reports `draft: null` for tombstones but still returns `draft_generation`. |
+| `base_revision` | Published checkpoint revision last **acknowledged** for this live draft. Ordinary `save-draft` cannot change it. Explicit `acknowledge_base` may advance it only when `observed_revision` CAS-matches the current published revision. |
+| summary / next_step / context / state / author / updated_at / links | Editor payload while `live=1`. Cleared on tombstone; generation is kept. Incomplete drafts are allowed. Link *targets* are stored for recovery; publish still validates links. |
 
-`drafts.revision` is the only draft concurrency token. Published `expected_revision` remains the only checkpoint CAS token.
+Missing row (legacy never-drafted activity) is generation `0`. After the first draft, the row remains. `drafts.revision` is the only draft concurrency token. Published `expected_revision` remains the only checkpoint CAS token.
 
 ### Transaction / concurrency contracts
 
@@ -42,12 +60,12 @@ Every mutating command (`save-draft`, `discard-draft`, `publish`, `restore`, …
 
 | Operation | Freshness check | Success | Failure |
 |---|---|---|---|
-| `save-draft` | `expected_draft_revision` equals current draft revision, or `0` if none | Upsert revision N+1, replace links | `stale_revision` with `current_draft_revision`; prior draft bytes unchanged |
-| `discard-draft` | Same CAS; missing draft + expected `0` is idempotent success | Delete draft + links | Stale: newer draft kept |
-| `publish` | Published `expected_revision` CAS. Optional `consume_draft_revision`: delete the draft only when that token still matches. Omit it for the external/test-seam writer so a newer publication keeps the local draft. | Append checkpoint; consume matching draft in the same transaction | Stale: published row and draft both unchanged |
-| `get` | Read | Snapshot includes `current` (published) and `draft` (or `null`) | Read errors do not return empty stand-ins for valid rows |
+| `save-draft` | `expected_draft_revision` equals current generation (0 only if no row). Ordinary save: if `live=1`, `base_revision` must equal stored base. Optional `acknowledge_base` + `observed_revision`: `observed_revision` must equal latest published revision; then base becomes that observed revision. | Upsert generation N+1, `live=1`, replace links | `stale_revision` with `current_draft_revision` and `current_base_revision` when relevant; prior bytes unchanged |
+| `discard-draft` | Same generation CAS. Missing row + expected `0` is idempotent success. Tombstone + matching generation is idempotent success. | Increment generation, `live=0`, clear payload, drop links. Row remains. | Stale: live or tombstone head unchanged |
+| `publish` | Published `expected_revision` CAS. Optional `consume_draft_revision`: **required match** when present — mismatch fails the whole publish. Omit consume for the external/test-seam writer. | Append checkpoint; matching consume tombstones (does not DELETE) in the same transaction | Stale: published row and draft head both unchanged |
+| `get` | Read | `current` (published), `draft` (live payload or `null`), `draft_generation` (0 if no row) | Read errors do not return empty stand-ins for valid rows |
 
-Delayed writers: a `save-draft` whose `expected_draft_revision` no longer matches (discarded, published-and-cleared, or a newer draft) is rejected and must not insert a row. That is the store-side guard against resurrecting discarded/published drafts and against overwriting a newer draft.
+Delayed writers: a `save-draft` / `discard-draft` / consume whose generation no longer matches is rejected and must not insert, delete, or tombstone a newer head. That is the store-side guard against ABA after discard/recreate and against resurrecting discarded drafts.
 
 External publications in this slice use the existing `publish` command as an **internal test seam**. The public agent CLI remains issue #6.
 
@@ -57,22 +75,26 @@ External publications in this slice use the existing `publish` command as an **i
 
 | Command | Payload | Result |
 |---|---|---|
-| `save-draft` | `{activity_id, expected_draft_revision, base_revision, summary, next_step?, context?, state, author, links?}` | `{draft}` with `revision`, `base_revision`, fields, `updated_at`, `links`. No history entry. |
-| `discard-draft` | `{activity_id, expected_draft_revision}` | `{draft: null}` |
-| `get` | unchanged | Adds `draft` (`null` or payload). `revision` is still the published checkpoint revision. |
-| `publish` | existing fields plus optional `consume_draft_revision` | On success, matching draft is consumed. Omitted consume leaves the draft (external seam). On `stale_revision`, draft is untouched and `current_revision` is returned. |
+| `save-draft` | `{activity_id, expected_draft_revision, base_revision, summary, next_step?, context?, state, author, links?, acknowledge_base?, observed_revision?}` | `{draft}` with `revision` (generation), `base_revision`, fields, `updated_at`, `links`. No history entry. |
+| `discard-draft` | `{activity_id, expected_draft_revision}` | `{draft: null, draft_generation}` |
+| `get` | unchanged | Adds `draft` (`null` or live payload) and `draft_generation`. `revision` is still the published checkpoint revision. |
+| `publish` | existing fields plus optional `consume_draft_revision` | On success, matching consume tombstones the head. Omitted consume leaves a live draft. Consume mismatch is `stale_revision` and does not append. |
+
+Ordinary UI Save checkpoint sends `expected_revision` = acknowledged `draft.base_revision` (not the refreshed published revision). Explicit “Save draft as checkpoint” sends `expected_revision` = the observed revision captured when the conflict was shown.
 
 ## UI contracts
 
-- Compact always renders the **published** checkpoint (`current.*`), never editor/draft text. A visible “Unsaved draft” indicator appears when `draft` exists.
-- Expanded hydrates the editor from `draft` when present, else from `current`. Collapse keeps the draft on disk and shows published text in Compact.
-- Panel recreate / close / reopen: `get` recovers the draft into the editor. History count is unchanged.
-- Same-instance `refresh()` must not clobber unacknowledged editor keystrokes (`dirty` since last successful `save-draft`).
-- Programmatic hydration (`copyCurrentToEditor` / applying a recovered draft) sets a hydrating guard so `onTextChanged` / recovered text cannot schedule autosave.
-- Autosave is scheduled only from genuine user edits (`onTextEdited` / explicit dirty). Acknowledgment is honest: “Draft saved” only after a matching `save-draft` ok. In-flight shows “Saving draft…”. Failure is `lastError` and never blanks the editor.
-- One `Process` is single-flight. Coalesce queued `save-draft`. Capture `activity_id`, `expected_draft_revision`, and a client generation at send time. Ignore or compensate results whose generation/activity no longer match (wrong-activity async, discard/publish while in flight).
-- Activity switch and create: persist the current draft first. If `save-draft` fails, **do not switch/create**; keep editor text, show the error, resync the compact picker. This replaces the #4 in-memory Save/Discard/Cancel switch prompt. Discard is an explicit Expanded action. Restore while a draft exists is still refused so history restore cannot clobber unpublished text.
-- Stale **Save checkpoint**: keep the draft in the editor, load the newer published `current` for display, show a conflict prompt. Resolution is deliberate against the **observed** current revision: Save draft as a new checkpoint (`expected_revision` = the revision now shown), Load published (discard draft, hydrate from `current`), or Keep editing. The UI never silently retries publish with an updated expected revision.
+Identities: `revision` (published), `draftRevision` (durable generation, including tombstone), `editSequence` (editor), `inFlight` snapshot (request id, activity, edit sequence, generation, payload).
+
+- Compact always renders the **published** checkpoint (`current.*`), never editor/draft text. A visible “Unsaved draft” indicator appears when a **live** draft exists.
+- Expanded hydrates the editor from live `draft` when present, else from `current`. Collapse keeps the draft on disk and shows published text in Compact.
+- Panel recreate / close / reopen: `get` recovers a live draft into the editor and restores `draftBaseRevision` from `draft.base_revision`, not from refreshed `current.revision`. History count is unchanged. Tombstone generation is adopted so the next save CAS-es the head.
+- Same-instance `refresh()` must not clobber unacknowledged editor keystrokes (`editSequence` since last acked save).
+- Programmatic hydration sets a hydrating guard so recovered text cannot schedule autosave.
+- Autosave is scheduled only from genuine user edits. Acknowledgment is honest: “Draft saved” only when the acked snapshot’s `editSequence` still matches the editor. In-flight shows “Saving draft…”. Failure is `lastError` and never blanks the editor.
+- Store mutations serialize on an explicit FIFO scheduler (`enqueueOp` / `pumpQueue`). Coalesce **only** unsent autosaves for the same activity. Never silently drop explicit Save, discard, or navigation. CAS tokens are bound at send. Stale/wrong-activity responses are ignored for editor state and **must not** compensating-discard.
+- Activity switch and create: persist the current draft first. If a save is in flight or the editor moved past the in-flight sequence, **defer** navigation with visible “Saving draft…” and keep the picker on the current activity until the exact current sequence is persisted — or show the error and do not switch. Discard is an explicit Expanded action. Restore while a live draft exists is still refused.
+- Stale **Save checkpoint**: keep the draft in the editor, load the newer published `current` for display, capture `observedRevision`, show a conflict prompt. Ordinary Save continues to CAS `draftBaseRevision`. Keep editing does not advance base. Only “Save draft as checkpoint” publishes against `observedRevision` (itself a CAS). Load published discards against the current generation. The UI never silently retries ordinary publish with a refreshed expected revision.
 
 ## Out of scope
 
@@ -84,13 +106,13 @@ Recorded after RED→GREEN. Python tests are not native Omarchy evidence.
 
 ### Source (Python)
 
-RED, first missing command:
+RED, against 52541e327fa8101b566926d71589e04148068270 plus the new tests only:
 
 ```
-cd tests && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest test_drafts.TestDrafts.test_save_draft_persists_without_publishing_history -v
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 ```
 
-Failed: `AssertionError: 2 != 0` (`save-draft` unknown). Later slices similarly started from missing `discard-draft` (exit 2) and from `publish` wiping an unrelated draft.
+Failed (7): missing `draft_session`; ordinary `save-draft` accepted a rebased `base_revision`; `acknowledge_base` did not CAS observed revision; stale discard/consume after recreate deleted the new draft (`draft_generation` absent); Panel still used `expected_revision: root.revision` and the singleton queue/`discard-draft` compensate path.
 
 GREEN, full suite from the repository root:
 
@@ -100,7 +122,7 @@ python3 -m py_compile bin/breadcrumb-store tests/*.py
 git diff --check
 ```
 
-43 tests OK (11.308s), including draft CAS, discard/publish non-resurrection, concurrent external publish + save-draft, v1 additive drafts table, permission-error prior-byte preserve, and source contracts for autosave/conflict/native harness strings.
+53 tests OK (13.401s), including acknowledged-base CAS, Keep-editing old-base publish conflict, generation tombstones, ABA stale discard/consume, overlapping session scheduler, and source contracts for ordinary Save vs observed resolution.
 
 ### Native (isolated component, the-cave)
 
@@ -114,7 +136,7 @@ HARNESS_SRC=tests/native/harness \
   ./tests/native/run-isolated.sh
 ```
 
-Pre-commit working-tree run: `validate_rc=0`, `qs_rc=0`, `ui_ok=true`, `HARNESS_OK`, `classification=component-test-not-full-host-integration`. Compact showed published lantern checkpoint with `hasDraft`; recreate recovered `Durable lantern draft after close` without bumping `draftRevision`; store-seam `publish` set `conflictPrompt` while keeping the draft; resolution published revision 5 against observed revision 4. Live `shell.json` sha unchanged; live plugin dir still had no `tbassss.breadcrumb`.
+Working-tree run: `validate_rc=0`, `qs_rc=0`, `ui_ok=true`, `HARNESS_OK`, `classification=component-test-not-full-host-integration`, finished `step=54`. Recreate after external publish kept draft base 3 vs published 4; ordinary Save and Keep-editing retry both set `conflictPrompt` without overwriting the agent checkpoint; resolution published revision 5 against observed 4. Same-tick autosave+keystrokes+nav recovered `overlap-autosave-nav-v2`; explicit Save behind queued autosave published `explicit-save-behind-autosave`; overlapping discard left `typed-during-discard`. Live `shell.json` sha unchanged (`469bfd9b5c8a29ff3e5e8f45a09a66729eaf6a4e4b42462cf26fc99f4102eaee`); live `qs` pid 1600 unchanged; live plugin dir still had no `tbassss.breadcrumb`.
 
 ### Classification
 
