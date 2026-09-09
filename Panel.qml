@@ -985,7 +985,43 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: "󰆓"
+    text: ""
+    iconComponent: Component {
+      Canvas {
+        property color ink: button.active ? button.activeColor : button.foreground
+        onInkChanged: requestPaint()
+        onWidthChanged: requestPaint()
+        onHeightChanged: requestPaint()
+        onPaint: {
+          var c = getContext("2d")
+          c.reset()
+          c.scale(width / 24, height / 24)
+          c.strokeStyle = ink
+          c.fillStyle = ink
+          c.lineWidth = 1.8
+          c.lineJoin = "round"
+          c.lineCap = "round"
+          // Rounded toast outline with two distinct bite scallops.
+          c.beginPath()
+          c.moveTo(5, 19.5)
+          c.lineTo(5, 11.5)
+          c.bezierCurveTo(0.5, 10, 2.5, 4, 8, 3.5)
+          c.bezierCurveTo(12, 2.5, 15.5, 3, 17.5, 5)
+          c.bezierCurveTo(13.5, 5, 13.5, 9, 17, 9.5)
+          c.bezierCurveTo(13.5, 11, 15, 14.5, 18.5, 14)
+          c.lineTo(18.5, 19.5)
+          c.quadraticCurveTo(12, 21, 5, 19.5)
+          c.closePath()
+          c.stroke()
+          c.beginPath()
+          c.arc(21, 6, 1.25, 0, Math.PI * 2)
+          c.fill()
+          c.beginPath()
+          c.arc(21, 11, 1.05, 0, Math.PI * 2)
+          c.fill()
+        }
+      }
+    }
     tooltipText: root.hasActivity ? ("Breadcrumb · " + root.activity.name) : "Breadcrumb"
     active: root.loadState === "error"
     activeColor: root.urgent
