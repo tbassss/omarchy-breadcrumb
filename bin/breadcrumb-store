@@ -215,6 +215,33 @@ def init_schema(conn: sqlite3.Connection) -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS drafts (
+                activity_id TEXT PRIMARY KEY REFERENCES activities(id),
+                revision INTEGER NOT NULL,
+                base_revision INTEGER NOT NULL,
+                summary TEXT NOT NULL,
+                next_step TEXT,
+                context TEXT,
+                state TEXT NOT NULL,
+                author TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS draft_links (
+                activity_id TEXT NOT NULL REFERENCES drafts(activity_id) ON DELETE CASCADE,
+                position INTEGER NOT NULL,
+                label TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                target TEXT NOT NULL,
+                PRIMARY KEY (activity_id, position)
+            )
+            """
+        )
         conn.execute("COMMIT")
     except sqlite3.Error:
         conn.execute("ROLLBACK")
@@ -595,6 +622,225 @@ def expected_revision_value(value: object) -> int:
     return value
 
 
+def expected_draft_revision_value(value: object) -> int:
+    if value is None:
+        fail("validation", "expected_draft_revision is required")
+    if isinstance(value, bool) or not isinstance(value, int):
+        fail("validation", "expected_draft_revision must be an integer")
+    if value < 0:
+        fail("validation", "expected_draft_revision cannot be negative")
+    return value
+
+
+def base_revision_value(value: object) -> int:
+    if value is None:
+        fail("validation", "base_revision is required")
+    if isinstance(value, bool) or not isinstance(value, int):
+        fail("validation", "base_revision must be an integer")
+    if value < 0:
+        fail("validation", "base_revision cannot be negative")
+    return value
+
+
+def load_draft(conn: sqlite3.Connection, activity_id: str) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT activity_id, revision, base_revision, summary, next_step, context, state, author, updated_at
+        FROM drafts
+        WHERE activity_id = ?
+        """,
+        (activity_id,),
+    ).fetchone()
+
+
+def load_draft_links(conn: sqlite3.Connection, activity_id: str) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT label, kind, target
+        FROM draft_links
+        WHERE activity_id = ?
+        ORDER BY position ASC
+        """,
+        (activity_id,),
+    ).fetchall()
+    return [{"label": row["label"], "kind": row["kind"], "target": row["target"]} for row in rows]
+
+
+def draft_payload(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
+    return {
+        "activity_id": row["activity_id"],
+        "revision": int(row["revision"]),
+        "base_revision": int(row["base_revision"]),
+        "summary": row["summary"],
+        "next_step": row["next_step"],
+        "context": row["context"],
+        "state": row["state"],
+        "author": row["author"],
+        "updated_at": row["updated_at"],
+        "links": load_draft_links(conn, row["activity_id"]),
+    }
+
+
+def replace_draft_links(conn: sqlite3.Connection, activity_id: str, links: list[dict]) -> None:
+    conn.execute("DELETE FROM draft_links WHERE activity_id = ?", (activity_id,))
+    for position, link in enumerate(links):
+        conn.execute(
+            """
+            INSERT INTO draft_links(activity_id, position, label, kind, target)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (activity_id, position, link["label"], link["kind"], link["target"]),
+        )
+
+
+def delete_draft(conn: sqlite3.Connection, activity_id: str) -> None:
+    conn.execute("DELETE FROM draft_links WHERE activity_id = ?", (activity_id,))
+    conn.execute("DELETE FROM drafts WHERE activity_id = ?", (activity_id,))
+
+
+def current_draft_revision(conn: sqlite3.Connection, activity_id: str) -> int:
+    row = load_draft(conn, activity_id)
+    if row is None:
+        return 0
+    return int(row["revision"])
+
+
+def validate_draft_links(raw: object) -> list[dict]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        fail("validation", "links must be a list")
+    if len(raw) > 20:
+        fail("validation", "Too many links (max 20)")
+    links = []
+    for index, item in enumerate(raw):
+        field = f"links[{index}]"
+        if not isinstance(item, dict):
+            fail("validation", f"{field} must be an object")
+        label = plain_text(
+            item.get("label"),
+            field=f"{field}.label",
+            required=False,
+            max_len=LINK_LABEL_MAX,
+            allow_empty=True,
+        ) or ""
+        kind = item.get("kind") or "web"
+        if kind not in LINK_KINDS:
+            fail("validation", f"{field}.kind must be web, file, or folder")
+        target = plain_text(
+            item.get("target"),
+            field=f"{field}.target",
+            required=False,
+            max_len=LINK_TARGET_MAX,
+            allow_empty=True,
+        ) or ""
+        if not label and not target:
+            continue
+        links.append({"label": label, "kind": kind, "target": target})
+    return links
+
+
+def cmd_save_draft(conn: sqlite3.Connection, payload: dict) -> None:
+    activity_id = require_activity_id(payload.get("activity_id"))
+    expected = expected_draft_revision_value(payload.get("expected_draft_revision"))
+    base_revision = base_revision_value(payload.get("base_revision"))
+    state = validate_state(payload.get("state"))
+    summary = plain_text(
+        payload.get("summary"),
+        field="summary",
+        required=False,
+        max_len=SUMMARY_MAX,
+        allow_empty=True,
+    ) or ""
+    next_step = plain_text(
+        payload.get("next_step"),
+        field="next_step",
+        required=False,
+        max_len=NEXT_STEP_MAX,
+        allow_empty=True,
+    )
+    context = plain_text(payload.get("context"), field="context", required=False, max_len=CONTEXT_MAX)
+    author = plain_text(payload.get("author"), field="author", required=True, max_len=AUTHOR_MAX)
+    links = validate_draft_links(payload.get("links"))
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        activity = load_activity(conn, activity_id)
+        if activity is None:
+            conn.execute("ROLLBACK")
+            fail("validation", "Unknown activity")
+        current = current_draft_revision(conn, activity_id)
+        if current != expected:
+            conn.execute("ROLLBACK")
+            fail(
+                "stale_revision",
+                "A newer draft was saved. Reload before saving the draft.",
+                {"current_draft_revision": current, "expected_draft_revision": expected},
+            )
+        revision = current + 1
+        updated_at = utc_now()
+        conn.execute(
+            """
+            INSERT INTO drafts(
+                activity_id, revision, base_revision, summary, next_step, context, state, author, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(activity_id) DO UPDATE SET
+                revision = excluded.revision,
+                base_revision = excluded.base_revision,
+                summary = excluded.summary,
+                next_step = excluded.next_step,
+                context = excluded.context,
+                state = excluded.state,
+                author = excluded.author,
+                updated_at = excluded.updated_at
+            """,
+            (activity_id, revision, base_revision, summary, next_step, context, state, author, updated_at),
+        )
+        replace_draft_links(conn, activity_id, links)
+        conn.execute("COMMIT")
+    except SystemExit:
+        raise
+    except sqlite3.IntegrityError:
+        conn.execute("ROLLBACK")
+        current = current_draft_revision(conn, activity_id)
+        fail(
+            "stale_revision",
+            "A newer draft was saved. Reload before saving the draft.",
+            {"current_draft_revision": current, "expected_draft_revision": expected},
+        )
+    except sqlite3.Error as exc:
+        conn.execute("ROLLBACK")
+        fail("io", f"Could not save the draft: {exc}")
+    row = load_draft(conn, activity_id)
+    ok({"draft": draft_payload(conn, row)})
+
+
+def cmd_discard_draft(conn: sqlite3.Connection, payload: dict) -> None:
+    activity_id = require_activity_id(payload.get("activity_id"))
+    expected = expected_draft_revision_value(payload.get("expected_draft_revision"))
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        activity = load_activity(conn, activity_id)
+        if activity is None:
+            conn.execute("ROLLBACK")
+            fail("validation", "Unknown activity")
+        current = current_draft_revision(conn, activity_id)
+        if current != expected:
+            conn.execute("ROLLBACK")
+            fail(
+                "stale_revision",
+                "A newer draft was saved. Reload before discarding.",
+                {"current_draft_revision": current, "expected_draft_revision": expected},
+            )
+        delete_draft(conn, activity_id)
+        conn.execute("COMMIT")
+    except SystemExit:
+        raise
+    except sqlite3.Error as exc:
+        conn.execute("ROLLBACK")
+        fail("io", f"Could not discard the draft: {exc}")
+    ok({"draft": None})
+
+
 def cmd_get(conn: sqlite3.Connection, payload: dict) -> None:
     activity_id = payload.get("activity_id")
     if activity_id is not None and not isinstance(activity_id, str):
@@ -616,6 +862,7 @@ def cmd_get(conn: sqlite3.Connection, payload: dict) -> None:
                 "selected_activity_id": None,
                 "activities": listed,
                 "history": {"entries": [], "has_more": False, "next_before_revision": None},
+                "draft": None,
             }
         )
         return
@@ -629,12 +876,15 @@ def cmd_get(conn: sqlite3.Connection, payload: dict) -> None:
             fail("io", f"Could not save the selected activity: {exc}")
     history = history_page(conn, activity["id"], HISTORY_PAGE_DEFAULT, None)
     current_row = latest_checkpoint(conn, activity["id"])
+    draft_row = load_draft(conn, activity["id"])
+    draft = draft_payload(conn, draft_row) if draft_row is not None else None
     base = {
         "activity": activity_payload(activity),
         "view": view,
         "selected_activity_id": activity["id"],
         "activities": listed,
         "history": history,
+        "draft": draft,
     }
     if current_row is None:
         ok({"state": "empty", "current": None, "revision": 0, **base})
@@ -661,6 +911,10 @@ def cmd_publish(conn: sqlite3.Connection, payload: dict) -> None:
     context = plain_text(payload.get("context"), field="context", required=False, max_len=CONTEXT_MAX)
     author = plain_text(payload.get("author"), field="author", required=True, max_len=AUTHOR_MAX)
     links = validate_links(payload.get("links"))
+    consume_draft = payload.get("consume_draft_revision")
+    if consume_draft is not None:
+        if isinstance(consume_draft, bool) or not isinstance(consume_draft, int) or consume_draft < 0:
+            fail("validation", "consume_draft_revision must be a non-negative integer")
     conn.execute("BEGIN IMMEDIATE")
     try:
         activity = load_activity(conn, activity_id)
@@ -694,6 +948,8 @@ def cmd_publish(conn: sqlite3.Connection, payload: dict) -> None:
                 """,
                 (checkpoint_id, position, link["label"], link["kind"], link["target"]),
             )
+        if consume_draft is not None and current_draft_revision(conn, activity_id) == consume_draft:
+            delete_draft(conn, activity_id)
         conn.execute("COMMIT")
     except SystemExit:
         raise
@@ -840,6 +1096,8 @@ COMMANDS = {
     "rename-activity": cmd_rename_activity,
     "archive-activity": cmd_archive_activity,
     "get": cmd_get,
+    "save-draft": cmd_save_draft,
+    "discard-draft": cmd_discard_draft,
     "history": cmd_history,
     "publish": cmd_publish,
     "restore": cmd_restore,

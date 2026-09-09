@@ -2,13 +2,14 @@ import Quickshell
 import Quickshell.Io
 import QtQuick
 
-// Isolated offscreen component driver for Breadcrumb #3+#4 Panel.qml.
+// Isolated offscreen component driver for Breadcrumb #5 Panel.qml.
 // Classification: real candidate Panel.qml + real qs/Qt runtime + minimal
 // fake qs.Ui/qs.Commons. Not full omarchy-shell host integration.
 //
-// Retains #3 save/reopen/recreate/draft checks, then drives real Panel
-// create A/B, separate saves, switch, recreate, archive access, and
-// history restore. Construction-time TextField onTextChanged must not be
+// Retains #3 save/reopen/recreate and in-memory refresh, then durable
+// draft recover, compact published+indicator, persist-then-switch,
+// create-while-draft, and native conflict presentation via the store
+// publish seam. Construction-time TextField onTextChanged must not be
 // treated as a user draft.
 ShellRoot {
   id: harness
@@ -28,6 +29,8 @@ ShellRoot {
   property string expectedAuthor: "You"
   property string draftSummary: "Unsaved lantern draft — do not clobber"
   property string draftNext: "Keep this next-step draft"
+  property string durableDraft: "Durable lantern draft after close"
+  property string durableNext: "Keep this durable next step"
   property string secondSummary: "Mapped the east tunnel after the lantern count"
   property string secondNext: "Walk the restored checkpoint"
   property string activityBName: "App Project"
@@ -39,8 +42,10 @@ ShellRoot {
   property string restoredCheckpointId: ""
   property int savedRevision: 0
   property int restoredRevision: 0
-  property int revisionBeforeStale: 0
+  property int durableDraftRevision: 0
   property string dirtyCreateDraft: "Draft that must not vanish on create"
+  property string agentSummary: "Agent published while the lantern draft was open"
+  property bool externalDone: false
   property var qmlErrors: []
 
   function panelObj() {
@@ -81,6 +86,10 @@ ShellRoot {
       opened: p.opened,
       busy: p.busy,
       dirty: p.dirty,
+      hasDraft: !!p.hasDraft,
+      draftRevision: p.draftRevision || 0,
+      draftStatus: p.draftStatus || "",
+      conflictPrompt: !!p.conflictPrompt,
       hasActivity: p.hasActivity,
       hasCurrent: p.hasCurrent,
       revision: p.revision,
@@ -103,8 +112,6 @@ ShellRoot {
       activityCount: acts.length,
       historyCount: history.length,
       showArchived: !!p.showArchived,
-      switchPrompt: !!p.switchPrompt,
-      pendingSwitchId: p.pendingSwitchId || "",
       pickerValue: picker ? picker.value : "",
       storePath: p.storePath
     }
@@ -124,7 +131,7 @@ ShellRoot {
       restoredRevision: restoredRevision,
       qmlErrors: qmlErrors,
       classification: "component-test-not-full-host-integration",
-      notes: "Real Panel.qml driven through createActivity/saveCheckpoint/switchActivity/archiveActivity/restoreCheckpoint, genuine in-memory draft refresh, and Loader recreate. Host qs.Ui/qs.Commons are a minimal facade of inspected Cave APIs. KeyboardPanel is stubbed to avoid WlrLayershell. Not a live bar install. Not a source-only substitute: recreate asserts editSummary===current.summary on the live qs instance."
+      notes: "Real Panel.qml driven through createActivity/saveCheckpoint/saveDraft/switchActivity/archiveActivity/restoreCheckpoint, genuine in-memory draft refresh, Loader recreate of a durable draft, compact published+indicator, and native conflictPrompt after store publish. Host qs.Ui/qs.Commons are a minimal facade of inspected Cave APIs. KeyboardPanel is stubbed to avoid WlrLayershell. Not a live bar install."
     }
     if (extra) {
       for (var k in extra)
@@ -160,11 +167,38 @@ ShellRoot {
     }
   }
 
+  Process {
+    id: externalPub
+    stdout: StdioCollector { id: extOut; waitForEnd: true }
+    stderr: StdioCollector { waitForEnd: true }
+    onExited: function(code) {
+      console.log("HARNESS_EXTERNAL_PUB exit=" + code + " out=" + extOut.text)
+      if (code !== 0)
+        fail("external publish failed: " + extOut.text)
+      else
+        externalDone = true
+    }
+  }
+
   function writeOut(obj) {
     var json = JSON.stringify(obj)
     console.log("HARNESS_RESULT " + json)
     writer.command = ["/usr/bin/python3", "-c", "import os,sys; p=os.environ['BREADCRUMB_RESULTS']; open(p,'w',encoding='utf-8').write(sys.argv[1]); print('WROTE', p, len(sys.argv[1]))", json]
     writer.running = true
+  }
+
+  function publishExternal(activityIdValue, expected, summary) {
+    externalDone = false
+    var payloadObj = {
+      activity_id: activityIdValue,
+      expected_revision: expected,
+      summary: summary,
+      next_step: "Review the conflict",
+      state: "in_progress",
+      author: "Agent"
+    }
+    externalPub.command = ["/usr/bin/python3", panelObj().storePath, "publish", JSON.stringify(payloadObj)]
+    externalPub.running = true
   }
 
   Loader {
@@ -174,7 +208,7 @@ ShellRoot {
   }
 
   Timer {
-    interval: 60000
+    interval: 90000
     running: true
     repeat: false
     onTriggered: fail("watchdog timeout at step " + step)
@@ -190,7 +224,7 @@ ShellRoot {
 
   function idle() {
     var p = panelObj()
-    return !!(p && !p.busy && p.loadState !== "loading")
+    return !!(p && !p.busy && p.loadState !== "loading" && p.draftStatus !== "saving")
   }
 
   function tick() {
@@ -198,7 +232,7 @@ ShellRoot {
       return
     ticks += 1
     stepTicks += 1
-    if (stepTicks > 160) {
+    if (stepTicks > 200) {
       fail("timeout in step " + step)
       return
     }
@@ -439,22 +473,6 @@ ShellRoot {
         fail("persisted UI summary mismatch")
         return
       }
-      if (p.current.next_step !== expectedNext) {
-        fail("persisted UI next mismatch")
-        return
-      }
-      if (p.current.context !== expectedContext) {
-        fail("persisted UI context mismatch")
-        return
-      }
-      if (p.current.state !== expectedState) {
-        fail("persisted UI state mismatch")
-        return
-      }
-      if (p.current.author !== expectedAuthor) {
-        fail("persisted UI author mismatch")
-        return
-      }
       if (p.editSummary !== expectedSummary) {
         fail("editor readback summary mismatch")
         return
@@ -500,12 +518,12 @@ ShellRoot {
         return
       if (!p.expanded)
         return
-      p.editSummary = secondSummary
-      p.editNext = secondNext
+      p.editSummary = durableDraft
+      p.editNext = durableNext
       p.editContext = expectedContext
       p.editState = expectedState
       p.editAuthor = expectedAuthor
-      p.saveCheckpoint()
+      p.saveDraft()
       step = 13
       stepTicks = 0
       return
@@ -514,8 +532,139 @@ ShellRoot {
     if (step === 13) {
       if (!idle())
         return
+      if (p.lastError !== "") {
+        fail("saveDraft error: " + p.lastError)
+        return
+      }
+      if (!p.hasDraft) {
+        fail("saveDraft did not set hasDraft")
+        return
+      }
+      if (p.draftStatus !== "saved") {
+        fail("autosave acknowledgment was not honest: " + p.draftStatus)
+        return
+      }
+      if ((p.historyEntries || []).length !== 1) {
+        fail("saveDraft published history")
+        return
+      }
+      durableDraftRevision = p.draftRevision
+      snapshots.push(snap("durable-saved"))
+      if (p.expanded)
+        p.toggleView()
+      step = 14
+      stepTicks = 0
+      return
+    }
+
+    if (step === 14) {
+      if (!idle())
+        return
+      if (p.expanded) {
+        fail("did not collapse with durable draft")
+        return
+      }
+      if (p.current.summary !== expectedSummary) {
+        fail("compact showed draft text instead of published checkpoint")
+        return
+      }
+      if (p.editSummary === expectedSummary && p.editSummary !== durableDraft) {
+        fail("compact lost the durable editor draft")
+        return
+      }
+      if (!p.hasDraft) {
+        fail("compact missing unsaved draft indicator")
+        return
+      }
+      snapshots.push(snap("compact-draft-indicator"))
+      panelLoader.active = false
+      step = 15
+      stepTicks = 0
+      return
+    }
+
+    if (step === 15) {
+      if (panelLoader.item)
+        return
+      panelLoader.active = true
+      step = 16
+      stepTicks = 0
+      return
+    }
+
+    if (step === 16) {
+      if (panelLoader.status === Loader.Error) {
+        fail("Panel.qml failed to reload with draft")
+        return
+      }
+      if (panelLoader.status !== Loader.Ready || !panelObj())
+        return
+      step = 17
+      stepTicks = 0
+      return
+    }
+
+    if (step === 17) {
+      p = panelObj()
+      if (!idle())
+        return
+      if (stepTicks < 20)
+        return
+      if (!p.hasDraft) {
+        fail("durable draft missing after recreate")
+        return
+      }
+      if (p.current.summary !== expectedSummary) {
+        fail("recreate with draft lost published checkpoint")
+        return
+      }
+      if (p.editSummary !== durableDraft) {
+        fail("durable draft missing after recreate")
+        return
+      }
+      if (p.editNext !== durableNext) {
+        fail("durable next missing after recreate")
+        return
+      }
+      if ((p.historyEntries || []).length !== 1) {
+        fail("recreate with draft published history")
+        return
+      }
+      if (p.draftRevision !== durableDraftRevision) {
+        fail("initial programmatic hydration accidentally autosaved")
+        return
+      }
+      snapshots.push(snap("recreated-draft"))
+      if (!p.expanded)
+        p.toggleView()
+      step = 18
+      stepTicks = 0
+      return
+    }
+
+    if (step === 18) {
+      if (!idle())
+        return
+      p.editSummary = secondSummary
+      p.editNext = secondNext
+      p.editContext = expectedContext
+      p.editState = expectedState
+      p.editAuthor = expectedAuthor
+      p.saveCheckpoint()
+      step = 19
+      stepTicks = 0
+      return
+    }
+
+    if (step === 19) {
+      if (!idle())
+        return
       if (p.current.summary !== secondSummary) {
         fail("second A save summary mismatch")
+        return
+      }
+      if (p.hasDraft) {
+        fail("publish did not consume the matching draft")
         return
       }
       if (p.revision !== 2) {
@@ -525,12 +674,12 @@ ShellRoot {
       snapshots.push(snap("saved-a-second"))
       p.createName = activityBName
       p.createActivity()
-      step = 14
+      step = 20
       stepTicks = 0
       return
     }
 
-    if (step === 14) {
+    if (step === 20) {
       if (!idle())
         return
       if (!p.hasActivity || p.activity.name !== activityBName) {
@@ -545,12 +694,12 @@ ShellRoot {
       snapshots.push(snap("created-b"))
       if (!p.expanded)
         p.toggleView()
-      step = 15
+      step = 21
       stepTicks = 0
       return
     }
 
-    if (step === 15) {
+    if (step === 21) {
       if (!idle())
         return
       p.editSummary = activityBSummary
@@ -559,30 +708,26 @@ ShellRoot {
       p.editState = expectedState
       p.editAuthor = expectedAuthor
       p.saveCheckpoint()
-      step = 16
+      step = 22
       stepTicks = 0
       return
     }
 
-    if (step === 16) {
+    if (step === 22) {
       if (!idle())
         return
       if (p.current.summary !== activityBSummary) {
         fail("B save summary mismatch")
         return
       }
-      if (p.activity.id !== activityBId) {
-        fail("B save left the wrong activity")
-        return
-      }
       snapshots.push(snap("saved-b"))
       p.switchActivity(activityId)
-      step = 17
+      step = 23
       stepTicks = 0
       return
     }
 
-    if (step === 17) {
+    if (step === 23) {
       if (!idle())
         return
       if (p.activity.id !== activityId) {
@@ -599,46 +744,26 @@ ShellRoot {
       }
       snapshots.push(snap("switched-a"))
       p.editSummary = "Unsaved A draft before switch"
-      p.dirty = true
-      p.switchActivity(activityBId)
-      step = 18
+      p.saveDraft()
+      step = 24
       stepTicks = 0
       return
     }
 
-    if (step === 18) {
-      if (p.busy)
+    if (step === 24) {
+      if (!idle())
         return
-      if (!p.switchPrompt) {
-        fail("dirty switch did not prompt save/discard/cancel")
-        return
-      }
-      if (p.activity.id !== activityId) {
-        fail("dirty switch discarded A without a prompt")
+      if (!p.hasDraft) {
+        fail("A draft did not persist before switch")
         return
       }
-      if (p.editSummary !== "Unsaved A draft before switch") {
-        fail("dirty switch clobbered in-memory A draft")
-        return
-      }
-      snapshots.push(snap("switch-prompt"))
-      p.cancelSwitch()
-      if (p.switchPrompt) {
-        fail("cancelSwitch left the prompt visible")
-        return
-      }
-      if (p.activity.id !== activityId) {
-        fail("cancelSwitch still switched activities")
-        return
-      }
-      p.dirty = false
       p.switchActivity(activityBId)
-      step = 19
+      step = 25
       stepTicks = 0
       return
     }
 
-    if (step === 19) {
+    if (step === 25) {
       if (!idle())
         return
       if (p.activity.id !== activityBId) {
@@ -650,38 +775,74 @@ ShellRoot {
         return
       }
       snapshots.push(snap("switched-b"))
-      panelLoader.active = false
-      step = 20
+      p.switchActivity(activityId)
+      step = 26
       stepTicks = 0
       return
     }
 
-    if (step === 20) {
+    if (step === 26) {
+      if (!idle())
+        return
+      if (p.activity.id !== activityId) {
+        fail("switch back to A lost the activity")
+        return
+      }
+      if (p.editSummary !== "Unsaved A draft before switch") {
+        fail("activity switch discarded A's durable draft")
+        return
+      }
+      snapshots.push(snap("switched-a-draft-recovered"))
+      panelLoader.active = false
+      step = 27
+      stepTicks = 0
+      return
+    }
+
+    if (step === 27) {
       if (panelLoader.item)
         return
       panelLoader.active = true
-      step = 21
+      step = 28
       stepTicks = 0
       return
     }
 
-    if (step === 21) {
+    if (step === 28) {
       if (panelLoader.status === Loader.Error) {
         fail("Panel.qml failed to reload after B")
         return
       }
       if (panelLoader.status !== Loader.Ready || !panelObj())
         return
-      step = 22
+      step = 29
       stepTicks = 0
       return
     }
 
-    if (step === 22) {
+    if (step === 29) {
       p = panelObj()
       if (!idle())
         return
       if (stepTicks < 3)
+        return
+      if (p.activity.id !== activityId) {
+        fail("activity id B mismatch after recreate")
+        return
+      }
+      if (p.editSummary !== "Unsaved A draft before switch") {
+        fail("recreate after switch lost A's durable draft")
+        return
+      }
+      snapshots.push(snap("recreated-a-with-draft"))
+      p.switchActivity(activityBId)
+      step = 30
+      stepTicks = 0
+      return
+    }
+
+    if (step === 30) {
+      if (!idle())
         return
       if (p.activity.id !== activityBId) {
         fail("activity id B mismatch after recreate")
@@ -691,22 +852,14 @@ ShellRoot {
         fail("B summary mismatch after recreate")
         return
       }
-      if (p.editSummary !== activityBSummary) {
-        fail("B editor mismatch after recreate")
-        return
-      }
-      if (p.dirty) {
-        fail("fresh Panel marked dirty after B recreate")
-        return
-      }
-      snapshots.push(snap("recreated-b"))
+      snapshots.push(snap("switched-b-after-recreate"))
       p.archiveActivity(activityBId)
-      step = 23
+      step = 31
       stepTicks = 0
       return
     }
 
-    if (step === 23) {
+    if (step === 31) {
       if (!idle())
         return
       if (!p.activity || p.activity.id !== activityBId) {
@@ -720,12 +873,12 @@ ShellRoot {
       snapshots.push(snap("archived-b"))
       p.showArchived = true
       p.refresh()
-      step = 24
+      step = 32
       stepTicks = 0
       return
     }
 
-    if (step === 24) {
+    if (step === 32) {
       if (!idle())
         return
       if (p.activity.id !== activityBId || !p.activity.archived_at) {
@@ -738,12 +891,12 @@ ShellRoot {
       }
       snapshots.push(snap("archived-access"))
       p.switchActivity(activityId)
-      step = 25
+      step = 33
       stepTicks = 0
       return
     }
 
-    if (step === 25) {
+    if (step === 33) {
       if (!idle())
         return
       if (p.activity.id !== activityId) {
@@ -763,14 +916,19 @@ ShellRoot {
         fail("missing first checkpoint id")
         return
       }
+      if (p.hasDraft) {
+        if (!p.busy)
+          p.discardDraft()
+        return
+      }
       snapshots.push(snap("history-before-restore"))
       p.restoreCheckpoint(firstCheckpointId)
-      step = 26
+      step = 34
       stepTicks = 0
       return
     }
 
-    if (step === 26) {
+    if (step === 34) {
       if (!idle())
         return
       if (p.lastError !== "") {
@@ -797,12 +955,12 @@ ShellRoot {
         return
       }
       snapshots.push(snap("restored"))
-      step = 27
+      step = 35
       stepTicks = 0
       return
     }
 
-    if (step === 27) {
+    if (step === 35) {
       if (!idle())
         return
       var picker = findActivityPicker(p)
@@ -815,113 +973,28 @@ ShellRoot {
         return
       }
       snapshots.push(snap("picker-start-a"))
-      p.editSummary = "Unsaved A draft before picker cancel"
-      p.dirty = true
-      picker.selectCurrent(activityBId)
-      step = 28
+      p.editSummary = "Unsaved A draft before picker switch"
+      p.saveDraft()
+      step = 36
       stepTicks = 0
       return
     }
 
-    if (step === 28) {
-      if (p.busy)
-        return
-      if (!p.switchPrompt) {
-        fail("picker dirty select did not prompt save/discard/cancel")
-        return
-      }
-      if (p.activity.id !== activityId) {
-        fail("picker dirty select switched activities")
-        return
-      }
-      if (p.editSummary !== "Unsaved A draft before picker cancel") {
-        fail("picker dirty select clobbered in-memory A draft")
-        return
-      }
-      snapshots.push(snap("picker-dirty-select"))
-      p.cancelSwitch()
-      if (p.switchPrompt) {
-        fail("cancelSwitch left the picker prompt visible")
-        return
-      }
-      if (p.activity.id !== activityId) {
-        fail("cancelSwitch still switched activities after picker select")
-        return
-      }
-      picker = findActivityPicker(p)
-      if (!picker) {
-        fail("compact activityPicker missing after dirty cancel")
-        return
-      }
-      if (picker.value !== activityId) {
-        fail("picker desync after dirty cancel")
-        return
-      }
-      snapshots.push(snap("picker-after-cancel"))
-      p.editSummary = "Unsaved A draft before failed switch"
-      p.dirty = true
-      picker.selectCurrent(activityBId)
-      step = 29
-      stepTicks = 0
-      return
-    }
-
-    if (step === 29) {
-      if (p.busy)
-        return
-      if (!p.switchPrompt) {
-        fail("failed-switch setup did not prompt")
-        return
-      }
-      if (p.activity.id !== activityId) {
-        fail("failed-switch setup left A")
-        return
-      }
-      revisionBeforeStale = p.revision
-      p.revision = p.revision + 50
-      p.confirmSwitchSave()
-      step = 30
-      stepTicks = 0
-      return
-    }
-
-    if (step === 30) {
+    if (step === 36) {
       if (!idle())
         return
-      if (p.activity.id !== activityId) {
-        fail("stale save-switch left A")
-        return
-      }
-      if (p.editSummary !== "Unsaved A draft before failed switch") {
-        fail("stale save-switch discarded draft")
-        return
-      }
-      if (!p.dirty) {
-        fail("stale save-switch cleared dirty")
-        return
-      }
       picker = findActivityPicker(p)
       if (!picker) {
-        fail("compact activityPicker missing after failed switch")
+        fail("compact activityPicker missing before picker switch")
         return
       }
-      if (picker.value !== activityId) {
-        fail("picker desync after failed switch")
-        return
-      }
-      snapshots.push(snap("picker-after-failed-switch"))
-      p.cancelSwitch()
-      p.revision = revisionBeforeStale
-      p.dirty = false
-      if (p.current)
-        p.editSummary = p.current.summary
       picker.selectCurrent(activityBId)
-      step = 31
+      step = 37
       stepTicks = 0
       return
     }
 
-    if (step === 31) {
+    if (step === 37) {
       if (!idle())
         return
       if (p.activity.id !== activityBId) {
@@ -939,16 +1012,20 @@ ShellRoot {
       }
       snapshots.push(snap("picker-completed-b"))
       p.switchActivity(activityId)
-      step = 32
+      step = 38
       stepTicks = 0
       return
     }
 
-    if (step === 32) {
+    if (step === 38) {
       if (!idle())
         return
       if (p.activity.id !== activityId) {
         fail("JS switch back to A failed")
+        return
+      }
+      if (p.editSummary !== "Unsaved A draft before picker switch") {
+        fail("picker switch discarded A's durable draft")
         return
       }
       picker = findActivityPicker(p)
@@ -962,38 +1039,117 @@ ShellRoot {
       }
       snapshots.push(snap("picker-follow-a"))
       p.editSummary = dirtyCreateDraft
-      p.dirty = true
-      p.createName = "Personal"
-      p.createActivity()
-      step = 33
+      p.saveDraft()
+      step = 39
       stepTicks = 0
       return
     }
 
-    if (step === 33) {
+    if (step === 39) {
+      if (!idle())
+        return
+      p.createName = "Personal"
+      p.createActivity()
+      step = 40
+      stepTicks = 0
+      return
+    }
+
+    if (step === 40) {
+      if (!idle())
+        return
+      if (!p.activity || p.activity.name !== "Personal") {
+        fail("create while draft did not create Personal")
+        return
+      }
+      snapshots.push(snap("created-personal"))
+      p.switchActivity(activityId)
+      step = 41
+      stepTicks = 0
+      return
+    }
+
+    if (step === 41) {
       if (!idle())
         return
       if (!p.activity || p.activity.id !== activityId) {
-        fail("create while dirty switched activities")
-        return
-      }
-      if (p.activity.name === "Personal") {
-        fail("create while dirty created Personal")
+        fail("create while draft could not return to A")
         return
       }
       if (p.editSummary !== dirtyCreateDraft) {
-        fail("create while dirty discarded the in-memory draft")
+        fail("create while draft discarded A's durable draft")
         return
       }
-      if (!p.dirty) {
-        fail("create while dirty cleared dirty")
+      snapshots.push(snap("create-while-draft-preserved"))
+      publishExternal(activityId, p.revision, agentSummary)
+      step = 42
+      stepTicks = 0
+      return
+    }
+
+    if (step === 42) {
+      if (!externalDone)
+        return
+      p.saveCheckpoint()
+      step = 43
+      stepTicks = 0
+      return
+    }
+
+    if (step === 43) {
+      if (!idle())
+        return
+      if (!p.conflictPrompt) {
+        fail("native conflict prompt missing")
         return
       }
-      if (!p.lastError) {
-        fail("create while dirty did not explain the refusal")
+      if (!p.current || p.current.summary !== agentSummary)
+        return
+      if (p.editSummary !== dirtyCreateDraft) {
+        fail("stale save blanked the draft")
         return
       }
-      snapshots.push(snap("create-while-dirty-refused"))
+      if (p.current.summary === dirtyCreateDraft) {
+        fail("stale save overwrote the newer publication")
+        return
+      }
+      snapshots.push(snap("conflict"))
+      p.resolveConflictKeepEditing()
+      if (p.conflictPrompt) {
+        fail("keep editing left the conflict prompt")
+        return
+      }
+      if (p.editSummary !== dirtyCreateDraft) {
+        fail("keep editing lost the draft")
+        return
+      }
+      snapshots.push(snap("conflict-keep"))
+      p.resolveConflictSave()
+      step = 44
+      stepTicks = 0
+      return
+    }
+
+    if (step === 44) {
+      if (!idle())
+        return
+      if (p.lastError !== "") {
+        fail("resolution save error: " + p.lastError)
+        return
+      }
+      if (p.conflictPrompt) {
+        fail("resolution left the conflict prompt")
+        return
+      }
+      if (p.current.summary !== dirtyCreateDraft) {
+        fail("resolution did not publish the draft against the observed revision")
+        return
+      }
+      if (p.hasDraft) {
+        fail("resolution publish did not consume the draft")
+        return
+      }
+      snapshots.push(snap("conflict-resolved"))
       succeed()
     }
   }

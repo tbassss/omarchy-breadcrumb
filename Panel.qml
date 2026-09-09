@@ -6,10 +6,10 @@ import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 
-// Named activities + dated history (#4). Compact picker and Expanded sidebar
-// share one store snapshot. Persistence is the Python store CLI via Process
-// argv, not a public agent API. Switching never silently discards an in-memory
-// edit: Save / Discard / Cancel.
+// Named activities + dated history + crash-safe per-activity drafts (#5).
+// Compact shows the published checkpoint and a draft indicator. Expanded
+// edits the draft. Persistence is the Python store CLI via Process argv,
+// not a public agent API. Stale Save never overwrites; resolution is explicit.
 Panel {
   id: root
   moduleName: "tbassss.breadcrumb"
@@ -23,7 +23,21 @@ Panel {
   property string view: "compact"
   property string pendingAction: ""
   property var pendingOpen: null
+  property var pendingMeta: ({})
   property bool dirty: false // genuine user edits (onTextEdited); construction onTextChanged is not a draft
+  property bool hydrating: false
+  property bool hasDraft: false
+  property int draftRevision: 0
+  property int draftBaseRevision: 0
+  property string draftStatus: ""
+  property int autosaveGeneration: 0
+  property bool pendingAutosave: false
+  property bool conflictPrompt: false
+  property string pendingSwitchAfterDraft: ""
+  property bool pendingCreateAfterDraft: false
+  property string queuedAction: ""
+  property var queuedPayload: null
+  property var queuedMeta: null
   property string editName: ""
   property string createName: ""
   property string renameName: ""
@@ -37,8 +51,6 @@ Panel {
   property bool historyHasMore: false
   property var historyNextBefore: null
   property bool showArchived: false
-  property bool switchPrompt: false
-  property string pendingSwitchId: ""
 
   readonly property bool busy: storeProc.running
   readonly property bool expanded: root.view === "expanded"
@@ -72,11 +84,20 @@ Panel {
     return name
   }
 
-  function applySnapshot(body) {
-    var previousId = root.activity && root.activity.id ? root.activity.id : ""
+  function beginHydrate() {
+    root.hydrating = true
+  }
+
+  function endHydrate() {
+    Qt.callLater(function() { root.hydrating = false })
+  }
+
+  function applyPublishedFields(body) {
     root.activity = body.activity || null
-    root.current = body.current || null
-    root.revision = body.revision || 0
+    if (body.current !== undefined)
+      root.current = body.current || null
+    if (body.revision !== undefined)
+      root.revision = body.revision || 0
     if (body.view === "compact" || body.view === "expanded")
       root.view = body.view
     if (body.activities)
@@ -90,17 +111,61 @@ Panel {
       root.loadState = "empty"
     else
       root.loadState = "ready"
-    var newId = root.activity && root.activity.id ? root.activity.id : ""
-    if (newId && newId !== previousId)
-      root.dirty = false
-    if (!root.dirty) {
-      copyCurrentToEditor()
-      Qt.callLater(function() { root.dirty = false })
-    }
     if (root.hasActivity) {
       root.editName = root.activity.name || ""
       root.renameName = root.activity.name || ""
     }
+  }
+
+  function applyDraftToEditor(draft) {
+    root.editSummary = draft.summary || ""
+    root.editNext = draft.next_step || ""
+    root.editContext = draft.context || ""
+    root.editState = draft.state || "ready"
+    root.editAuthor = draft.author || Model.defaultAuthor()
+    linkModel.clear()
+    var links = draft.links || []
+    for (var i = 0; i < links.length; i++) {
+      linkModel.append({
+        label: links[i].label || "",
+        kind: links[i].kind || "web",
+        target: links[i].target || ""
+      })
+    }
+  }
+
+  function hydrateEditorFromSnapshot(body) {
+    beginHydrate()
+    var draft = body.draft
+    if (draft) {
+      applyDraftToEditor(draft)
+      root.hasDraft = true
+      root.draftRevision = draft.revision || 0
+      root.draftBaseRevision = draft.base_revision || 0
+      root.dirty = true
+      root.pendingAutosave = false
+      root.draftStatus = "saved"
+    } else {
+      copyCurrentToEditor()
+      root.hasDraft = false
+      root.draftRevision = 0
+      root.draftBaseRevision = root.revision
+      root.dirty = false
+      root.pendingAutosave = false
+      root.draftStatus = ""
+    }
+    endHydrate()
+  }
+
+  function applySnapshot(body) {
+    var previousId = root.activity && root.activity.id ? root.activity.id : ""
+    applyPublishedFields(body)
+    var newId = root.activity && root.activity.id ? root.activity.id : ""
+    var activityChanged = newId !== previousId
+    if (activityChanged)
+      root.conflictPrompt = false
+    if (activityChanged || (!root.pendingAutosave && !root.dirty))
+      hydrateEditorFromSnapshot(body)
     root.syncActivityPicker()
   }
 
@@ -112,6 +177,7 @@ Panel {
   }
 
   function copyCurrentToEditor() {
+    beginHydrate()
     if (!root.hasCurrent) {
       root.editSummary = ""
       root.editNext = ""
@@ -119,6 +185,7 @@ Panel {
       root.editState = "ready"
       root.editAuthor = Model.defaultAuthor()
       linkModel.clear()
+      endHydrate()
       return
     }
     root.editSummary = root.current.summary || ""
@@ -135,6 +202,7 @@ Panel {
         target: links[i].target || ""
       })
     }
+    endHydrate()
   }
 
   function collectLinks() {
@@ -150,10 +218,87 @@ Panel {
     return links
   }
 
-  function runStore(action, payload) {
-    if (storeProc.running)
+  function markUserEdit() {
+    if (root.hydrating)
       return
+    root.dirty = true
+    root.hasDraft = true
+    root.pendingAutosave = true
+    root.draftStatus = ""
+    if (root.draftRevision === 0)
+      root.draftBaseRevision = root.revision
+    scheduleAutosave()
+  }
+
+  function scheduleAutosave() {
+    if (root.hydrating || !root.hasActivity)
+      return
+    autosaveTimer.restart()
+  }
+
+  function saveDraft() {
+    if (!root.hasActivity)
+      return
+    autosaveTimer.stop()
+    var activityId = root.activity.id
+    var gen = root.autosaveGeneration
+    root.draftStatus = "saving"
+    runStore("save-draft", {
+      activity_id: activityId,
+      expected_draft_revision: root.draftRevision,
+      base_revision: root.draftBaseRevision,
+      summary: root.editSummary,
+      next_step: root.editNext,
+      context: root.editContext,
+      state: root.editState,
+      author: root.editAuthor || Model.defaultAuthor(),
+      links: collectLinks()
+    }, { generation: gen, activityId: activityId })
+  }
+
+  function discardDraft() {
+    if (!root.hasActivity)
+      return
+    autosaveTimer.stop()
+    root.autosaveGeneration += 1
+    root.pendingAutosave = false
+    root.pendingSwitchAfterDraft = ""
+    root.pendingCreateAfterDraft = false
+    runStore("discard-draft", {
+      activity_id: root.activity.id,
+      expected_draft_revision: root.draftRevision
+    })
+  }
+
+  function abortPendingNav() {
+    root.pendingSwitchAfterDraft = ""
+    root.pendingCreateAfterDraft = false
+    root.syncActivityPicker()
+  }
+
+  function drainQueue() {
+    if (!root.queuedAction)
+      return
+    var action = root.queuedAction
+    var payload = root.queuedPayload
+    var meta = root.queuedMeta
+    root.queuedAction = ""
+    root.queuedPayload = null
+    root.queuedMeta = null
+    runStore(action, payload, meta)
+  }
+
+  function runStore(action, payload, meta) {
+    if (storeProc.running) {
+      if (action === "save-draft" || root.queuedAction === "") {
+        root.queuedAction = action
+        root.queuedPayload = payload
+        root.queuedMeta = meta || {}
+      }
+      return
+    }
     root.pendingAction = action
+    root.pendingMeta = meta || {}
     if (root.loadState !== "error")
       root.loadState = root.loadState === "ready" || root.loadState === "empty" ? root.loadState : "loading"
     if (action === "get" && !root.hasCurrent && !root.hasActivity)
@@ -169,22 +314,27 @@ Panel {
     runStore("get", payload)
   }
 
-  function createActivity() {
-    if (root.dirty) {
-      root.lastError = "Save or discard the current edit before creating another activity."
-      root.syncActivityPicker()
-      return
-    }
+  function actuallyCreate() {
     var name = String(root.createName || "").trim()
     if (!name)
       name = String(root.editName || "").trim()
     runStore("create-activity", { name: name })
   }
 
+  function createActivity() {
+    if (root.pendingAutosave) {
+      root.pendingCreateAfterDraft = true
+      saveDraft()
+      return
+    }
+    actuallyCreate()
+  }
+
   function saveCheckpoint() {
     if (!root.hasActivity)
       return
-    runStore("publish", {
+    autosaveTimer.stop()
+    var payload = {
       activity_id: root.activity.id,
       expected_revision: root.revision,
       summary: root.editSummary,
@@ -193,21 +343,23 @@ Panel {
       state: root.editState,
       author: root.editAuthor || Model.defaultAuthor(),
       links: collectLinks()
-    })
+    }
+    if (root.hasDraft)
+      payload.consume_draft_revision = root.draftRevision
+    runStore("publish", payload)
   }
 
   function switchActivity(id) {
     if (!id)
       return
     if (root.activity && id === root.activity.id) {
-      root.switchPrompt = false
-      root.pendingSwitchId = ""
+      root.pendingSwitchAfterDraft = ""
       root.syncActivityPicker()
       return
     }
-    if (root.dirty) {
-      root.pendingSwitchId = id
-      root.switchPrompt = true
+    if (root.pendingAutosave) {
+      root.pendingSwitchAfterDraft = id
+      saveDraft()
       root.syncActivityPicker()
       return
     }
@@ -215,28 +367,24 @@ Panel {
   }
 
   function doSwitch(id) {
-    root.switchPrompt = false
-    root.pendingSwitchId = ""
+    autosaveTimer.stop()
+    root.autosaveGeneration += 1
+    root.pendingSwitchAfterDraft = ""
     runStore("get", { activity_id: id, include_archived: root.showArchived })
   }
 
-  function confirmSwitchSave() {
-    if (!root.pendingSwitchId)
-      return
+  function resolveConflictSave() {
+    root.conflictPrompt = false
     saveCheckpoint()
   }
 
-  function confirmSwitchDiscard() {
-    var id = root.pendingSwitchId
-    root.dirty = false
-    copyCurrentToEditor()
-    doSwitch(id)
+  function resolveConflictLoadPublished() {
+    root.conflictPrompt = false
+    discardDraft()
   }
 
-  function cancelSwitch() {
-    root.pendingSwitchId = ""
-    root.switchPrompt = false
-    root.syncActivityPicker()
+  function resolveConflictKeepEditing() {
+    root.conflictPrompt = false
   }
 
   function renameActivity() {
@@ -255,7 +403,7 @@ Panel {
   function restoreCheckpoint(checkpointId) {
     if (!root.hasActivity || !checkpointId)
       return
-    if (root.dirty) {
+    if (root.dirty || root.hasDraft) {
       root.lastError = "Save or discard the current edit before restoring history."
       return
     }
@@ -292,28 +440,95 @@ Panel {
     runStore("validate-link", { kind: kind, target: target })
   }
 
+  function clearDraftState() {
+    root.hasDraft = false
+    root.draftRevision = 0
+    root.draftBaseRevision = root.revision
+    root.pendingAutosave = false
+    root.draftStatus = ""
+    root.dirty = false
+    root.conflictPrompt = false
+    root.autosaveGeneration += 1
+  }
+
   function handleStoreResult(exitCode, raw) {
     var body = Model.parseResponse(raw)
+    var action = root.pendingAction
+    var meta = root.pendingMeta || {}
     if (!body.ok) {
       root.lastError = body.message || "Could not complete that action."
-      if (root.pendingAction !== "set-view")
-        root.loadState = root.hasCurrent || root.hasActivity ? root.loadState : "error"
-      if (root.loadState === "loading")
+      if (action === "save-draft") {
+        root.draftStatus = "error"
+        abortPendingNav()
+      }
+      if (action === "publish" && body.error === "stale_revision") {
+        root.conflictPrompt = true
+        Qt.callLater(function() { root.refresh() })
+      }
+      if (action === "get") {
+        if (!(root.hasCurrent || root.hasActivity))
+          root.loadState = "error"
+      } else if (action !== "set-view" && root.loadState === "loading" && !(root.hasCurrent || root.hasActivity)) {
         root.loadState = "error"
+      }
       root.syncActivityPicker()
       return
     }
     root.lastError = ""
-    var action = root.pendingAction
-    if (action === "create-activity") {
+    if (action === "save-draft") {
+      var sameGen = meta.generation === root.autosaveGeneration
+      var sameActivity = meta.activityId && root.activity && meta.activityId === root.activity.id
+      if (!sameGen) {
+        if (body.draft && body.draft.revision) {
+          runStore("discard-draft", {
+            activity_id: meta.activityId,
+            expected_draft_revision: body.draft.revision
+          })
+        }
+        return
+      }
+      if (sameActivity && body.draft) {
+        root.draftRevision = body.draft.revision || 0
+        root.draftBaseRevision = body.draft.base_revision || root.draftBaseRevision
+        root.hasDraft = true
+        root.pendingAutosave = false
+        root.draftStatus = "saved"
+      }
+      if (root.pendingSwitchAfterDraft) {
+        var switchId = root.pendingSwitchAfterDraft
+        root.pendingSwitchAfterDraft = ""
+        Qt.callLater(function() { root.doSwitch(switchId) })
+        return
+      }
+      if (root.pendingCreateAfterDraft) {
+        root.pendingCreateAfterDraft = false
+        Qt.callLater(function() { root.actuallyCreate() })
+        return
+      }
+      return
+    }
+    if (action === "discard-draft") {
+      beginHydrate()
+      root.hasDraft = false
+      root.draftRevision = 0
+      root.draftBaseRevision = root.revision
+      root.pendingAutosave = false
+      root.draftStatus = ""
       root.dirty = false
+      root.conflictPrompt = false
+      copyCurrentToEditor()
+      return
+    }
+    if (action === "create-activity") {
       root.createName = ""
+      clearDraftState()
       applySnapshot({
         activity: body.activity || null,
         current: null,
         revision: 0,
         state: "empty",
-        view: root.view
+        view: root.view,
+        draft: null
       })
       if (root.hasActivity) {
         Qt.callLater(function() {
@@ -327,21 +542,16 @@ Panel {
       return
     }
     if (action === "publish" || action === "restore") {
-      root.dirty = false
+      if (action === "publish")
+        clearDraftState()
       applySnapshot({
         activity: root.activity,
         current: body.current || null,
         revision: body.revision,
         view: root.view,
-        state: body.state
+        state: body.state,
+        draft: null
       })
-      if (action === "publish" && root.pendingSwitchId) {
-        var switchId = root.pendingSwitchId
-        root.pendingSwitchId = ""
-        root.switchPrompt = false
-        Qt.callLater(function() { root.doSwitch(switchId) })
-        return
-      }
       Qt.callLater(function() { root.refresh() })
       return
     }
@@ -377,6 +587,13 @@ Panel {
   implicitHeight: button.implicitHeight
 
   ListModel { id: linkModel }
+
+  Timer {
+    id: autosaveTimer
+    interval: 250
+    repeat: false
+    onTriggered: root.saveDraft()
+  }
 
   BarIconButton {
     id: button
@@ -439,45 +656,55 @@ Panel {
 
         Column {
           width: parent.width
-          visible: root.switchPrompt
+          visible: root.conflictPrompt
           spacing: Style.space(6)
           Text {
             width: parent.width
-            text: "Save or discard this edit before switching activities."
+            text: "A newer checkpoint was saved. Your draft is still here."
             color: root.fg
             wrapMode: Text.WordWrap
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
             textFormat: Text.PlainText
           }
+          Text {
+            width: parent.width
+            visible: root.hasCurrent
+            text: "Published: " + (root.current ? (root.current.summary || "") : "")
+            color: root.fg
+            wrapMode: Text.WordWrap
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            textFormat: Text.PlainText
+          }
           Row {
             spacing: Style.space(6)
             Button {
-              text: "Save"
+              text: "Save draft as checkpoint"
               enabled: !root.busy
               foreground: root.fg
               fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
               bordered: true
-              onClicked: root.confirmSwitchSave()
+              onClicked: root.resolveConflictSave()
             }
             Button {
-              text: "Discard"
+              text: "Load published"
               enabled: !root.busy
               foreground: root.fg
               fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
               bordered: true
-              onClicked: root.confirmSwitchDiscard()
+              onClicked: root.resolveConflictLoadPublished()
             }
             Button {
-              text: "Cancel"
+              text: "Keep editing"
               enabled: !root.busy
               foreground: root.fg
               fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
               bordered: true
-              onClicked: root.cancelSwitch()
+              onClicked: root.resolveConflictKeepEditing()
             }
           }
         }
@@ -517,8 +744,8 @@ Panel {
 
         Column {
           width: parent.width
-          spacing: Style.space(8)
           visible: !root.hasActivity && root.loadState !== "loading"
+          spacing: Style.space(8)
 
           Text {
             width: parent.width
@@ -610,6 +837,17 @@ Panel {
             wrapMode: Text.WordWrap
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
+            textFormat: Text.PlainText
+          }
+          Text {
+            width: parent.width
+            visible: root.hasDraft
+            text: "Unsaved draft"
+            color: root.fg
+            wrapMode: Text.WordWrap
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            font.bold: true
             textFormat: Text.PlainText
           }
           Column {
@@ -779,7 +1017,7 @@ Panel {
               options: Model.stateOptions()
               foreground: root.fg
               fontFamily: root.fontFamily
-              onChanged: function(v) { root.editState = v; root.dirty = true }
+              onChanged: function(v) { root.editState = v; root.markUserEdit() }
             }
             Text {
               text: "Summary"
@@ -793,7 +1031,7 @@ Panel {
               text: root.editSummary
               foreground: root.fg
               onTextChanged: root.editSummary = text
-              onTextEdited: root.dirty = true
+              onTextEdited: root.markUserEdit()
             }
             Text {
               text: root.editState === "done" ? "Next step (optional)" : "Next step"
@@ -807,7 +1045,7 @@ Panel {
               text: root.editNext
               foreground: root.fg
               onTextChanged: root.editNext = text
-              onTextEdited: root.dirty = true
+              onTextEdited: root.markUserEdit()
             }
             Text {
               text: "Context"
@@ -827,7 +1065,7 @@ Panel {
               font.pixelSize: Style.font.body
               placeholderText: "Optional longer notes"
               onTextChanged: root.editContext = text
-              onTextEdited: root.dirty = true
+              onTextEdited: root.markUserEdit()
             }
             Text {
               text: "Reported author"
@@ -841,7 +1079,7 @@ Panel {
               text: root.editAuthor
               foreground: root.fg
               onTextChanged: root.editAuthor = text
-              onTextEdited: root.dirty = true
+              onTextEdited: root.markUserEdit()
             }
             Text {
               text: "Links"
@@ -864,7 +1102,7 @@ Panel {
                   text: label
                   foreground: root.fg
                   onTextChanged: linkModel.setProperty(index, "label", text)
-                  onTextEdited: root.dirty = true
+                  onTextEdited: root.markUserEdit()
                 }
                 Row {
                   spacing: Style.space(6)
@@ -875,14 +1113,14 @@ Panel {
                     showLabel: false
                     foreground: root.fg
                     fontFamily: root.fontFamily
-                    onChanged: function(v) { linkModel.setProperty(index, "kind", v); root.dirty = true }
+                    onChanged: function(v) { linkModel.setProperty(index, "kind", v); root.markUserEdit() }
                   }
                   TextField {
                     width: Style.space(180)
                     text: target
                     foreground: root.fg
                     onTextChanged: linkModel.setProperty(index, "target", text)
-                    onTextEdited: root.dirty = true
+                    onTextEdited: root.markUserEdit()
                   }
                 }
                 Row {
@@ -903,7 +1141,7 @@ Panel {
                     fontFamily: root.fontFamily
                     fontSize: Style.font.bodySmall
                     bordered: true
-                    onClicked: { linkModel.remove(index); root.dirty = true }
+                    onClicked: { linkModel.remove(index); root.markUserEdit() }
                   }
                 }
               }
@@ -915,7 +1153,18 @@ Panel {
               fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
               bordered: true
-              onClicked: { linkModel.append({ label: "", kind: "web", target: "" }); root.dirty = true }
+              onClicked: { linkModel.append({ label: "", kind: "web", target: "" }); root.markUserEdit() }
+            }
+            Text {
+              width: parent.width
+              visible: root.draftStatus !== ""
+              text: root.draftStatus === "saving" ? "Saving draft…" : (root.draftStatus === "saved" ? "Draft saved" : "")
+              color: root.fg
+              opacity: 0.75
+              wrapMode: Text.WordWrap
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              textFormat: Text.PlainText
             }
             Button {
               text: root.busy ? "Saving…" : "Save checkpoint"
@@ -924,6 +1173,16 @@ Panel {
               fontFamily: root.fontFamily
               bordered: true
               onClicked: root.saveCheckpoint()
+            }
+            Button {
+              text: "Discard draft"
+              visible: root.hasDraft
+              enabled: !root.busy
+              foreground: root.fg
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              bordered: true
+              onClicked: root.discardDraft()
             }
             Text {
               width: parent.width
@@ -1034,6 +1293,7 @@ Panel {
       root.handleStoreResult(exitCode, storeOut.text)
       root.pendingAction = ""
       root.pendingOpen = null
+      root.drainQueue()
     }
   }
 }
