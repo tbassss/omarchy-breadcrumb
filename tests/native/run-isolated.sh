@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Isolated Cave native validation for Breadcrumb issues #3, #4, and #5.
+# Isolated Cave native validation for Breadcrumb issues #3, #4, #5, and #6.
 # Does NOT install/enable the plugin, restart the live shell, or write live config.
 set -euo pipefail
 

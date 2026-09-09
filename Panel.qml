@@ -6,10 +6,10 @@ import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 
-// Named activities + dated history + crash-safe per-activity drafts (#5).
+// Named activities + dated history + crash-safe drafts + public agent command (#6).
 // Compact shows the published checkpoint and a draft indicator. Expanded
-// edits the draft. Persistence is the Python store CLI via Process argv,
-// not a public agent API. Stale Save never overwrites; resolution is explicit.
+// edits the draft. UI persistence is breadcrumb-store via Process argv.
+// Agents use bin/breadcrumb stdin JSON. Stale Save never overwrites.
 Panel {
   id: root
   moduleName: "tbassss.breadcrumb"
@@ -60,6 +60,7 @@ Panel {
   readonly property bool hasActivity: !!(root.activity && root.activity.id)
   readonly property bool hasCurrent: !!(root.current && root.current.id)
   readonly property string storePath: Model.fileFromUrl(Qt.resolvedUrl("bin/breadcrumb-store"))
+  readonly property string commandPath: Model.fileFromUrl(Qt.resolvedUrl("bin/breadcrumb"))
   readonly property color fg: root.bar ? root.bar.foreground : Color.foreground
   readonly property color urgent: root.bar ? root.bar.urgent : Color.urgent
   readonly property string fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
@@ -169,7 +170,17 @@ Panel {
       root.conflictPrompt = false
     if (activityChanged || (!root.pendingAutosave && !root.dirty))
       hydrateEditorFromSnapshot(body)
+    root.noteExternalPublication(body)
     root.syncActivityPicker()
+  }
+
+  function noteExternalPublication(body) {
+    var published = body.revision || 0
+    var local = root.hasDraft || root.dirty || root.pendingAutosave
+    if (local && published > root.draftBaseRevision) {
+      root.conflictPrompt = true
+      root.observedRevision = published
+    }
   }
 
   function syncActivityPicker() {
@@ -390,6 +401,29 @@ Panel {
     if (root.activity && root.activity.id)
       payload.activity_id = root.activity.id
     runStore("get", payload)
+  }
+
+  function probeExternal() {
+    if (!root.opened || !root.hasActivity)
+      return
+    if (probeProc.running || storeProc.running || root.inFlight)
+      return
+    probeProc.command = ["/usr/bin/python3", root.storePath, "head", JSON.stringify({ activity_id: root.activity.id })]
+    probeProc.running = true
+  }
+
+  function handleProbe(raw) {
+    var body = Model.parseResponse(raw)
+    if (!body.ok)
+      return
+    var rev = body.revision || 0
+    var cid = body.checkpoint_id || ""
+    var currentId = root.current && root.current.id ? root.current.id : ""
+    if (rev === root.revision && cid === currentId)
+      return
+    if (root.busy || storeProc.running)
+      return
+    root.refresh()
   }
 
   function actuallyCreate() {
@@ -718,6 +752,14 @@ Panel {
     interval: 250
     repeat: false
     onTriggered: root.saveDraft()
+  }
+
+  Timer {
+    id: changeProbe
+    interval: 750
+    repeat: true
+    running: root.opened
+    onTriggered: root.probeExternal()
   }
 
   BarIconButton {
@@ -1411,6 +1453,17 @@ Panel {
           textFormat: Text.PlainText
         }
       }
+    }
+  }
+
+  Process {
+    id: probeProc
+    stdout: StdioCollector {
+      id: probeOut
+      waitForEnd: true
+    }
+    onExited: function(exitCode) {
+      root.handleProbe(probeOut.text)
     }
   }
 

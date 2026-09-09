@@ -1,4 +1,4 @@
-# Isolated native harness (issues #3, #4, and #5)
+# Isolated native harness (issues #3, #4, #5, and #6)
 
 Component test: real `Panel.qml` + `/usr/bin/qs` + Qt offscreen. Not full omarchy-shell host integration. Not a live install.
 
@@ -29,7 +29,12 @@ Added for #5:
 15. Explicit `saveCheckpoint` queued behind an in-flight autosave is not dropped when another `saveDraft` is issued.
 16. `discardDraft` overlapping later keystrokes must not clobber the editor.
 
-These are native evidence. A Python source-contract pass is not a substitute. They are not live bar / real KeyboardPanel layer-shell acceptance.
+Added for #6:
+
+17. While the panel stays **open**, a public `bin/breadcrumb publish` (stdin JSON, required expected revision) refreshes published `current` without Loader recreate or shell restart. In-memory editor text and dirty stay. Conflict UI is shown. Draft base is not adopted from the new revision.
+18. With the panel **closed**, a public publish appears on reopen. In-memory draft is not clobbered. Conflict UI remains.
+
+These are native evidence. A Python source-contract pass is not a substitute. They are not live bar / real KeyboardPanel layer-shell acceptance. They are not a live installed SSH workflow.
 
 ## Run on the-cave only
 

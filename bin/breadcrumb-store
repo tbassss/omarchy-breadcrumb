@@ -946,7 +946,10 @@ def cmd_get(conn: sqlite3.Connection, payload: dict) -> None:
             }
         )
         return
-    if activity_id:
+    select = payload.get("select", True)
+    if select not in (True, False):
+        fail("validation", "select must be a boolean")
+    if activity_id and select:
         conn.execute("BEGIN IMMEDIATE")
         try:
             set_pref(conn, "selected_activity_id", activity["id"])
@@ -1180,6 +1183,30 @@ def cmd_set_view(conn: sqlite3.Connection, payload: dict) -> None:
     ok({"view": view})
 
 
+def cmd_head(conn: sqlite3.Connection, payload: dict) -> None:
+    activity_id = payload.get("activity_id")
+    if not isinstance(activity_id, str) or not activity_id:
+        fail("validation", "activity_id is required")
+    activity = conn.execute(
+        "SELECT id FROM activities WHERE id = ?",
+        (activity_id,),
+    ).fetchone()
+    if activity is None:
+        fail("validation", "Unknown activity")
+    current = latest_checkpoint(conn, activity_id)
+    if current is None:
+        ok({"activity_id": activity_id, "revision": 0, "checkpoint_id": None, "saved_at": None})
+        return
+    ok(
+        {
+            "activity_id": activity_id,
+            "revision": int(current["revision"]),
+            "checkpoint_id": current["id"],
+            "saved_at": current["saved_at"],
+        }
+    )
+
+
 def cmd_validate_link(payload: dict) -> None:
     kind = payload.get("kind")
     if kind not in LINK_KINDS:
@@ -1199,6 +1226,7 @@ COMMANDS = {
     "rename-activity": cmd_rename_activity,
     "archive-activity": cmd_archive_activity,
     "get": cmd_get,
+    "head": cmd_head,
     "save-draft": cmd_save_draft,
     "discard-draft": cmd_discard_draft,
     "history": cmd_history,

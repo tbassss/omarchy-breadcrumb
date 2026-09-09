@@ -1,0 +1,336 @@
+#!/usr/bin/env python3
+"""Breadcrumb public command — versioned stdin JSON (breadcrumb.command.v1).
+
+Agents identify activities, read the published checkpoint, and publish with a
+required expected revision. Draft consume/discard and implicit overwrite are
+not public. Persistence is the same transactional store the UI uses.
+"""
+
+from __future__ import annotations
+
+import importlib.machinery
+import importlib.util
+import json
+import sys
+from pathlib import Path
+
+SCHEMA = "breadcrumb.command.v1"
+MAX_STDIN_BYTES = 65536
+OPS = ("list", "read", "publish")
+FORBIDDEN_KEYS = (
+    "consume_draft_revision",
+    "expected_draft_revision",
+    "acknowledge_base",
+    "force",
+    "overwrite",
+    "consume_draft",
+    "discard_draft",
+)
+
+USAGE = (
+    "Usage: breadcrumb list|read|publish < JSON\n"
+    "Public v1 command. Notes go in stdin JSON, not in the shell command."
+)
+
+
+ERROR_CODES = {
+    "invalid_request": 2,
+    "validation": 3,
+    "stale_revision": 4,
+    "permission": 5,
+    "io": 6,
+    "schema": 7,
+}
+
+
+def load_store():
+    path = Path(__file__).resolve().parent / "breadcrumb-store"
+    loader = importlib.machinery.SourceFileLoader("breadcrumb_store", str(path))
+    spec = importlib.util.spec_from_loader("breadcrumb_store", loader)
+    if spec is None:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "v": 1,
+                    "op": None,
+                    "schema": SCHEMA,
+                    "error": "io",
+                    "message": "Cannot load the Breadcrumb store.",
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        )
+        raise SystemExit(6)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+store = load_store()
+
+
+class Capture(Exception):
+    def __init__(self, payload: dict, status: int) -> None:
+        super().__init__()
+        self.payload = payload
+        self.status = status
+
+
+def capture_ok(payload: dict) -> None:
+    body = {"ok": True}
+    body.update(payload)
+    raise Capture(body, 0)
+
+
+def capture_fail(code: str, message: str, extra: dict | None = None, *, exit_status: int | None = None) -> None:
+    body = {"ok": False, "error": code, "message": message}
+    if extra:
+        body.update(extra)
+    raise Capture(body, exit_status if exit_status is not None else ERROR_CODES.get(code, 1))
+
+
+store.ok = capture_ok
+store.fail = capture_fail
+
+
+def emit(op: str | None, payload: dict, status: int) -> None:
+    body = {"ok": bool(payload.get("ok")), "v": 1, "op": op, "schema": SCHEMA}
+    for key, value in payload.items():
+        if key == "ok":
+            continue
+        body[key] = value
+    print(json.dumps(body, ensure_ascii=False, separators=(",", ":")))
+    raise SystemExit(status)
+
+
+def fail_public(op: str | None, code: str, message: str, extra: dict | None = None, status: int | None = None) -> None:
+    payload = {"ok": False, "error": code, "message": message}
+    if extra:
+        payload.update(extra)
+    emit(op, payload, status if status is not None else ERROR_CODES.get(code, 1))
+
+
+def db_path() -> Path:
+    return store.data_dir() / store.DB_NAME
+
+
+def open_existing(*, readonly: bool):
+    path = db_path()
+    if not path.exists():
+        return None
+    try:
+        if readonly:
+            conn = store.sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        else:
+            conn = store.sqlite3.connect(str(path), isolation_level=None)
+    except store.sqlite3.Error as exc:
+        fail_public(None, "io", f"Cannot open the Breadcrumb database: {exc}")
+    conn.row_factory = store.sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")
+    if not readonly:
+        conn.execute("PRAGMA journal_mode = DELETE")
+        conn.execute("PRAGMA synchronous = FULL")
+        conn.execute("PRAGMA temp_store = MEMORY")
+    return conn
+
+
+def read_stdin_bounded() -> bytes:
+    remaining = MAX_STDIN_BYTES + 1
+    chunks: list[bytes] = []
+    while remaining > 0:
+        buf = sys.stdin.buffer.read(remaining)
+        if not buf:
+            break
+        chunks.append(buf)
+        remaining -= len(buf)
+    extra = sys.stdin.buffer.read(1)
+    data = b"".join(chunks)
+    if extra or len(data) > MAX_STDIN_BYTES:
+        fail_public(None, "invalid_request", f"Input exceeds {MAX_STDIN_BYTES} bytes", status=2)
+    return data
+
+
+def parse_payload(raw: bytes, argv_op: str | None) -> tuple[str, dict]:
+    if not raw.strip():
+        if argv_op == "list":
+            return "list", {"v": 1, "op": "list"}
+        fail_public(argv_op, "invalid_request", "JSON payload is required", status=2)
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        fail_public(argv_op, "invalid_request", "JSON payload must be UTF-8", status=2)
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as exc:
+        fail_public(argv_op, "invalid_request", f"JSON payload is not valid: {exc.msg}", status=2)
+    if not isinstance(value, dict):
+        fail_public(argv_op, "invalid_request", "JSON payload must be an object", status=2)
+    return argv_op or "", value
+
+
+def require_op(argv_op: str | None, payload: dict) -> str:
+    json_op = payload.get("op")
+    if json_op is None and argv_op:
+        op = argv_op
+    elif json_op is None:
+        fail_public(argv_op, "invalid_request", "op is required", status=2)
+    elif not isinstance(json_op, str):
+        fail_public(argv_op, "invalid_request", "op must be text", status=2)
+    elif argv_op and json_op != argv_op:
+        fail_public(argv_op, "invalid_request", "op does not match the command", status=2)
+    else:
+        op = json_op
+    if op not in OPS:
+        fail_public(op if op in OPS else argv_op, "invalid_request", f"Unknown command: {op}", status=2)
+    return op
+
+
+def validate_envelope(op: str, payload: dict) -> None:
+    version = payload.get("v")
+    if version is None:
+        fail_public(op, "invalid_request", "v is required", status=2)
+    if version != 1:
+        fail_public(op, "invalid_request", "Unsupported command version", status=2)
+    for key in FORBIDDEN_KEYS:
+        if key in payload:
+            fail_public(op, "invalid_request", f"{key} is not a public command option", status=2)
+
+
+def public_list(payload: dict) -> None:
+    include_archived = payload.get("include_archived", False)
+    if include_archived not in (True, False):
+        fail_public("list", "validation", "include_archived must be a boolean")
+    conn = open_existing(readonly=True)
+    if conn is None:
+        emit("list", {"ok": True, "activities": []}, 0)
+    try:
+        rows = store.list_activity_rows(conn, include_archived=include_archived)
+        activities = []
+        for row in rows:
+            current = store.latest_checkpoint(conn, row["id"])
+            item = store.activity_payload(row)
+            item["revision"] = int(current["revision"]) if current is not None else 0
+            item["summary"] = current["summary"] if current is not None else None
+            activities.append(item)
+        emit("list", {"ok": True, "activities": activities}, 0)
+    except store.sqlite3.Error as exc:
+        fail_public("list", "io", f"Store error: {exc}")
+    finally:
+        conn.close()
+
+
+def public_read(payload: dict) -> None:
+    activity_id = payload.get("activity_id")
+    if not isinstance(activity_id, str) or not activity_id:
+        fail_public("read", "validation", "activity_id is required")
+    conn = open_existing(readonly=True)
+    if conn is None:
+        fail_public("read", "validation", "Unknown activity")
+    try:
+        activity = conn.execute(
+            "SELECT id, name, created_at, archived_at FROM activities WHERE id = ?",
+            (activity_id,),
+        ).fetchone()
+        if activity is None:
+            fail_public("read", "validation", "Unknown activity")
+        current_row = store.latest_checkpoint(conn, activity_id)
+        current = store.checkpoint_payload(conn, current_row) if current_row is not None else None
+        has_live_draft = store.live_draft_payload(conn, activity_id) is not None
+        emit(
+            "read",
+            {
+                "ok": True,
+                "activity": store.activity_payload(activity),
+                "revision": current["revision"] if current is not None else 0,
+                "current": current,
+                "has_live_draft": has_live_draft,
+            },
+            0,
+        )
+    except store.sqlite3.Error as exc:
+        fail_public("read", "io", f"Store error: {exc}")
+    finally:
+        conn.close()
+
+
+def public_publish(payload: dict) -> None:
+    if "expected_revision" not in payload:
+        fail_public("publish", "validation", "expected_revision is required")
+    store_payload = {
+        "activity_id": payload.get("activity_id"),
+        "expected_revision": payload.get("expected_revision"),
+        "summary": payload.get("summary"),
+        "next_step": payload.get("next_step"),
+        "context": payload.get("context"),
+        "state": payload.get("state"),
+        "author": payload.get("author"),
+        "links": payload.get("links"),
+    }
+    if db_path().exists() is False:
+        fail_public("publish", "validation", "Unknown activity")
+    conn = None
+    try:
+        conn = store.connect(store.data_dir())
+        store.init_schema(conn)
+        store.cmd_publish(conn, store_payload)
+    except Capture as captured:
+        if not captured.payload.get("ok"):
+            emit("publish", captured.payload, captured.status)
+        current = captured.payload.get("current") or {}
+        activity_id = current.get("activity_id") or store_payload["activity_id"]
+        has_live_draft = False
+        if isinstance(activity_id, str) and activity_id:
+            try:
+                has_live_draft = store.live_draft_payload(conn, activity_id) is not None
+            except store.sqlite3.Error:
+                has_live_draft = False
+        emit(
+            "publish",
+            {
+                "ok": True,
+                "activity_id": current.get("activity_id"),
+                "revision": captured.payload.get("revision"),
+                "checkpoint_id": current.get("id"),
+                "saved_at": current.get("saved_at"),
+                "current": current,
+                "has_live_draft": has_live_draft,
+            },
+            0,
+        )
+    except store.sqlite3.Error as exc:
+        fail_public("publish", "io", f"Store error: {exc}")
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def main(argv: list[str]) -> None:
+    if argv and argv[0] in {"-h", "--help"}:
+        print(USAGE)
+        raise SystemExit(0)
+    argv_op = argv[0] if argv else None
+    if argv_op is not None and argv_op not in OPS:
+        fail_public(None, "invalid_request", f"Unknown command: {argv_op}", status=2)
+    extra = argv[1:]
+    if extra:
+        fail_public(argv_op, "invalid_request", "Pass JSON on stdin, not as extra arguments", status=2)
+    raw = read_stdin_bounded()
+    _ignored, payload = parse_payload(raw, argv_op)
+    if raw.strip():
+        op = require_op(argv_op, payload)
+        validate_envelope(op, payload)
+    else:
+        op = "list"
+    if op == "list":
+        public_list(payload)
+    elif op == "read":
+        public_read(payload)
+    else:
+        public_publish(payload)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
