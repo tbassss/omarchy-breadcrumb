@@ -197,6 +197,6 @@ Durable copy: `/home/hermes/breadcrumb-issue7-final-evidence/` (candidate.tar, h
 ## Remaining blockers
 
 - Independent persistence/concurrency review (parent-owned; required before merge). `validate-link` existence checks are Open-adapter only; CAS/draft rules unchanged.
-- Live install, restart, merge, and release remain unapproved (#8).
-- Dual-monitor, live theme swap, and real KeyboardPanel layershell are **not** claimed. Smallest proposed approved operation, if wanted later: a nested/throwaway Hyprland session that is **not** the user's live desktop, still without writing `~/.config/omarchy/shell.json` of the live user. Exact command is not run here.
-- This slice is not release-ready.
+- Live install, restart, owner dogfood, merge, and publication remain unapproved (#8). See `docs/RELEASE_PREP.md` and `docs/LIVE_TEST_PLAN.md`.
+- Dual-monitor, live theme swap, and real KeyboardPanel layershell are **not** claimed.
+- This slice is not a published release.
