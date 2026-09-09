@@ -24,7 +24,7 @@ WGU, Coach, and Life are Tyler's examples, not built-in categories. Public docum
 
 ### Activity navigation
 
-Users can create and rename activities, switch among them, and archive finished activities without erasing checkpoints. A compact activity selector and current checkpoint must remain usable with long names and more activities than fit across one row. Tabs versus sidebar is a visual prototype decision, not frozen here.
+Users can create and rename activities, switch among them, and archive finished activities without erasing checkpoints. A compact activity selector and current checkpoint must remain usable with long names and more activities than fit across one row. Approved layout: one interface with Compact and Expanded views sharing the same activity and checkpoint state. Default to Compact on first use and remember the last chosen view. Compact uses an activity picker and displays the status summary, next step, timestamp, and reported author. Expanded uses an activity sidebar and provides context, links, editing, and history. Editing and history are implemented once, in Expanded. Expand/Collapse must preserve the selected activity and manual draft; collapsing an editor shows the published checkpoint, not an unsaved draft. On narrow screens, adapt the layout without losing the distinction between glance and editing views.
 
 ### Current checkpoint
 
