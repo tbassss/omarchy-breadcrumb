@@ -58,8 +58,12 @@ class TestPluginContract(unittest.TestCase):
         self.assertIn("lastError", qml)
         self.assertIn("Save checkpoint", qml)
         self.assertIn("Create activity", qml)
-        self.assertNotIn("History", qml)
-        self.assertNotIn("activityPicker", qml)
+        self.assertIn("History", qml)
+        self.assertIn("activityPicker", qml)
+        self.assertIn("Save or discard this edit before switching activities.", qml)
+        self.assertIn("create-activity", qml)
+        self.assertIn("archive-activity", qml)
+        self.assertIn("Show archived", qml)
         self.assertGreaterEqual(qml.count("textFormat: Text.PlainText"), 8)
 
     def test_store_is_ui_seam_not_public_agent_cli(self) -> None:
@@ -100,6 +104,44 @@ class TestPluginContract(unittest.TestCase):
         self.assertIn("refresh clobbered genuine in-progress summary draft", qml)
         self.assertIn("panelLoader.active = false", qml)
         self.assertIn("Unsaved lantern draft", qml)
+        self.assertIn("createActivity()", qml)
+        self.assertIn("switchActivity(", qml)
+        self.assertIn("archiveActivity(", qml)
+        self.assertIn("restoreCheckpoint(", qml)
+        self.assertIn("App Project", qml)
+        self.assertIn("historyEntries", qml)
+        self.assertIn("activity id B mismatch after recreate", qml)
+        self.assertIn("archived activity was not readable", qml)
+        self.assertIn("restore did not append a new revision", qml)
+        dropdown = (ROOT / "tests" / "native" / "harness" / "qs" / "Ui" / "Dropdown.qml").read_text(encoding="utf-8")
+        self.assertIn("function selectCurrent(", dropdown)
+        self.assertIn("root.value = selected", dropdown)
+        self.assertIn("root.changed(selected)", dropdown)
+        self.assertIn("picker.selectCurrent(activityBId)", qml)
+        self.assertIn("picker desync after dirty cancel", qml)
+        self.assertIn("picker desync after failed switch", qml)
+        self.assertIn("picker desync after completed switch", qml)
+        self.assertIn("picker desync after later activity change", qml)
+        self.assertIn("create while dirty discarded the in-memory draft", qml)
+        self.assertIn("create while dirty did not explain the refusal", qml)
+
+    def test_create_activity_refuses_dirty_in_memory_draft(self) -> None:
+        qml = PANEL.read_text(encoding="utf-8")
+        idx = qml.index("function createActivity()")
+        chunk = qml[idx : idx + 600]
+        self.assertIn("root.dirty", chunk)
+        self.assertLess(chunk.find("root.dirty"), chunk.find("runStore"))
+        self.assertIn("Save or discard the current edit before creating another activity.", qml)
+        self.assertNotIn('runStore("create-activity"', chunk.split("root.dirty")[0])
+
+    def test_compact_picker_resyncs_to_authoritative_activity(self) -> None:
+        qml = PANEL.read_text(encoding="utf-8")
+        self.assertIn("function syncActivityPicker()", qml)
+        self.assertIn("activityPicker.value =", qml)
+        self.assertIn("syncActivityPicker()", qml)
+        cancel_idx = qml.index("function cancelSwitch()")
+        cancel_chunk = qml[cancel_idx : cancel_idx + 250]
+        self.assertIn("syncActivityPicker()", cancel_chunk)
 
 
 if __name__ == "__main__":

@@ -2,13 +2,14 @@ import Quickshell
 import Quickshell.Io
 import QtQuick
 
-// Isolated offscreen component driver for Breadcrumb #3 Panel.qml.
+// Isolated offscreen component driver for Breadcrumb #3+#4 Panel.qml.
 // Classification: real candidate Panel.qml + real qs/Qt runtime + minimal
 // fake qs.Ui/qs.Commons. Not full omarchy-shell host integration.
 //
-// Regression for editor hydration after Panel recreate, plus same-instance
-// genuine-draft preservation on refresh. Construction-time TextField
-// onTextChanged must not be treated as a user draft.
+// Retains #3 save/reopen/recreate/draft checks, then drives real Panel
+// create A/B, separate saves, switch, recreate, archive access, and
+// history restore. Construction-time TextField onTextChanged must not be
+// treated as a user draft.
 ShellRoot {
   id: harness
 
@@ -27,12 +28,39 @@ ShellRoot {
   property string expectedAuthor: "You"
   property string draftSummary: "Unsaved lantern draft — do not clobber"
   property string draftNext: "Keep this next-step draft"
+  property string secondSummary: "Mapped the east tunnel after the lantern count"
+  property string secondNext: "Walk the restored checkpoint"
+  property string activityBName: "App Project"
+  property string activityBSummary: "Screen is ready for a hands-on check"
+  property string activityBNext: "Walk the complete flow"
   property string activityId: ""
+  property string activityBId: ""
+  property string firstCheckpointId: ""
+  property string restoredCheckpointId: ""
   property int savedRevision: 0
+  property int restoredRevision: 0
+  property int revisionBeforeStale: 0
+  property string dirtyCreateDraft: "Draft that must not vanish on create"
   property var qmlErrors: []
 
   function panelObj() {
     return panelLoader.item
+  }
+
+  function findActivityPicker(item) {
+    if (!item)
+      return null
+    if (item.label === "Activity" && typeof item.selectCurrent === "function")
+      return item
+    var kids = item.children
+    if (!kids)
+      return null
+    for (var i = 0; i < kids.length; i++) {
+      var found = findActivityPicker(kids[i])
+      if (found)
+        return found
+    }
+    return null
   }
 
   function snap(tag) {
@@ -41,6 +69,9 @@ ShellRoot {
       return { tag: tag, missing: true }
     var a = p.activity || null
     var c = p.current || null
+    var history = p.historyEntries || []
+    var acts = p.activities || []
+    var picker = findActivityPicker(p)
     return {
       tag: tag,
       loadState: p.loadState,
@@ -55,18 +86,26 @@ ShellRoot {
       revision: p.revision,
       activityId: a ? a.id : "",
       activityName: a ? a.name : "",
+      archivedAt: a && a.archived_at ? a.archived_at : "",
       summary: c ? c.summary : "",
       nextStep: c ? c.next_step : "",
       context: c ? c.context : "",
       state: c ? c.state : "",
       author: c ? c.author : "",
       savedAt: c ? c.saved_at : "",
+      currentId: c ? c.id : "",
       editName: p.editName,
       editSummary: p.editSummary,
       editNext: p.editNext,
       editContext: p.editContext,
       editState: p.editState,
       editAuthor: p.editAuthor,
+      activityCount: acts.length,
+      historyCount: history.length,
+      showArchived: !!p.showArchived,
+      switchPrompt: !!p.switchPrompt,
+      pendingSwitchId: p.pendingSwitchId || "",
+      pickerValue: picker ? picker.value : "",
       storePath: p.storePath
     }
   }
@@ -78,10 +117,14 @@ ShellRoot {
       ticks: ticks,
       snapshots: snapshots,
       activityId: activityId,
+      activityBId: activityBId,
+      firstCheckpointId: firstCheckpointId,
+      restoredCheckpointId: restoredCheckpointId,
       savedRevision: savedRevision,
+      restoredRevision: restoredRevision,
       qmlErrors: qmlErrors,
       classification: "component-test-not-full-host-integration",
-      notes: "Real Panel.qml driven through createActivity/saveCheckpoint/toggleView/close/open, genuine in-memory draft refresh, and Loader recreate. Host qs.Ui/qs.Commons are a minimal facade of inspected Cave APIs. KeyboardPanel is stubbed to avoid WlrLayershell. Not a live bar install. Not a source-only substitute: recreate asserts editSummary===current.summary on the live qs instance."
+      notes: "Real Panel.qml driven through createActivity/saveCheckpoint/switchActivity/archiveActivity/restoreCheckpoint, genuine in-memory draft refresh, and Loader recreate. Host qs.Ui/qs.Commons are a minimal facade of inspected Cave APIs. KeyboardPanel is stubbed to avoid WlrLayershell. Not a live bar install. Not a source-only substitute: recreate asserts editSummary===current.summary on the live qs instance."
     }
     if (extra) {
       for (var k in extra)
@@ -131,7 +174,7 @@ ShellRoot {
   }
 
   Timer {
-    interval: 20000
+    interval: 60000
     running: true
     repeat: false
     onTriggered: fail("watchdog timeout at step " + step)
@@ -155,7 +198,7 @@ ShellRoot {
       return
     ticks += 1
     stepTicks += 1
-    if (stepTicks > 100) {
+    if (stepTicks > 160) {
       fail("timeout in step " + step)
       return
     }
@@ -265,6 +308,7 @@ ShellRoot {
         return
       }
       savedRevision = p.revision
+      firstCheckpointId = p.current.id
       snapshots.push(snap("saved"))
       p.editSummary = draftSummary
       p.editNext = draftNext
@@ -444,6 +488,512 @@ ShellRoot {
         return
       }
       snapshots.push(snap("recreated"))
+      if (!p.expanded)
+        p.toggleView()
+      step = 12
+      stepTicks = 0
+      return
+    }
+
+    if (step === 12) {
+      if (!idle())
+        return
+      if (!p.expanded)
+        return
+      p.editSummary = secondSummary
+      p.editNext = secondNext
+      p.editContext = expectedContext
+      p.editState = expectedState
+      p.editAuthor = expectedAuthor
+      p.saveCheckpoint()
+      step = 13
+      stepTicks = 0
+      return
+    }
+
+    if (step === 13) {
+      if (!idle())
+        return
+      if (p.current.summary !== secondSummary) {
+        fail("second A save summary mismatch")
+        return
+      }
+      if (p.revision !== 2) {
+        fail("second A save revision mismatch: " + p.revision)
+        return
+      }
+      snapshots.push(snap("saved-a-second"))
+      p.createName = activityBName
+      p.createActivity()
+      step = 14
+      stepTicks = 0
+      return
+    }
+
+    if (step === 14) {
+      if (!idle())
+        return
+      if (!p.hasActivity || p.activity.name !== activityBName) {
+        fail("createActivity B did not switch to App Project")
+        return
+      }
+      if (p.activity.id === activityId) {
+        fail("createActivity B reused activity A id")
+        return
+      }
+      activityBId = p.activity.id
+      snapshots.push(snap("created-b"))
+      if (!p.expanded)
+        p.toggleView()
+      step = 15
+      stepTicks = 0
+      return
+    }
+
+    if (step === 15) {
+      if (!idle())
+        return
+      p.editSummary = activityBSummary
+      p.editNext = activityBNext
+      p.editContext = expectedContext
+      p.editState = expectedState
+      p.editAuthor = expectedAuthor
+      p.saveCheckpoint()
+      step = 16
+      stepTicks = 0
+      return
+    }
+
+    if (step === 16) {
+      if (!idle())
+        return
+      if (p.current.summary !== activityBSummary) {
+        fail("B save summary mismatch")
+        return
+      }
+      if (p.activity.id !== activityBId) {
+        fail("B save left the wrong activity")
+        return
+      }
+      snapshots.push(snap("saved-b"))
+      p.switchActivity(activityId)
+      step = 17
+      stepTicks = 0
+      return
+    }
+
+    if (step === 17) {
+      if (!idle())
+        return
+      if (p.activity.id !== activityId) {
+        fail("switch to A failed")
+        return
+      }
+      if (p.current.summary !== secondSummary) {
+        fail("switch to A readback mismatch")
+        return
+      }
+      if (p.editSummary !== secondSummary) {
+        fail("switch to A did not hydrate editor")
+        return
+      }
+      snapshots.push(snap("switched-a"))
+      p.editSummary = "Unsaved A draft before switch"
+      p.dirty = true
+      p.switchActivity(activityBId)
+      step = 18
+      stepTicks = 0
+      return
+    }
+
+    if (step === 18) {
+      if (p.busy)
+        return
+      if (!p.switchPrompt) {
+        fail("dirty switch did not prompt save/discard/cancel")
+        return
+      }
+      if (p.activity.id !== activityId) {
+        fail("dirty switch discarded A without a prompt")
+        return
+      }
+      if (p.editSummary !== "Unsaved A draft before switch") {
+        fail("dirty switch clobbered in-memory A draft")
+        return
+      }
+      snapshots.push(snap("switch-prompt"))
+      p.cancelSwitch()
+      if (p.switchPrompt) {
+        fail("cancelSwitch left the prompt visible")
+        return
+      }
+      if (p.activity.id !== activityId) {
+        fail("cancelSwitch still switched activities")
+        return
+      }
+      p.dirty = false
+      p.switchActivity(activityBId)
+      step = 19
+      stepTicks = 0
+      return
+    }
+
+    if (step === 19) {
+      if (!idle())
+        return
+      if (p.activity.id !== activityBId) {
+        fail("switch to B failed")
+        return
+      }
+      if (p.current.summary !== activityBSummary) {
+        fail("switch to B readback mismatch")
+        return
+      }
+      snapshots.push(snap("switched-b"))
+      panelLoader.active = false
+      step = 20
+      stepTicks = 0
+      return
+    }
+
+    if (step === 20) {
+      if (panelLoader.item)
+        return
+      panelLoader.active = true
+      step = 21
+      stepTicks = 0
+      return
+    }
+
+    if (step === 21) {
+      if (panelLoader.status === Loader.Error) {
+        fail("Panel.qml failed to reload after B")
+        return
+      }
+      if (panelLoader.status !== Loader.Ready || !panelObj())
+        return
+      step = 22
+      stepTicks = 0
+      return
+    }
+
+    if (step === 22) {
+      p = panelObj()
+      if (!idle())
+        return
+      if (stepTicks < 3)
+        return
+      if (p.activity.id !== activityBId) {
+        fail("activity id B mismatch after recreate")
+        return
+      }
+      if (p.current.summary !== activityBSummary) {
+        fail("B summary mismatch after recreate")
+        return
+      }
+      if (p.editSummary !== activityBSummary) {
+        fail("B editor mismatch after recreate")
+        return
+      }
+      if (p.dirty) {
+        fail("fresh Panel marked dirty after B recreate")
+        return
+      }
+      snapshots.push(snap("recreated-b"))
+      p.archiveActivity(activityBId)
+      step = 23
+      stepTicks = 0
+      return
+    }
+
+    if (step === 23) {
+      if (!idle())
+        return
+      if (!p.activity || p.activity.id !== activityBId) {
+        fail("archive switched away from B")
+        return
+      }
+      if (!p.activity.archived_at) {
+        fail("archive did not set archived_at")
+        return
+      }
+      snapshots.push(snap("archived-b"))
+      p.showArchived = true
+      p.refresh()
+      step = 24
+      stepTicks = 0
+      return
+    }
+
+    if (step === 24) {
+      if (!idle())
+        return
+      if (p.activity.id !== activityBId || !p.activity.archived_at) {
+        fail("archived activity was not readable")
+        return
+      }
+      if (p.current.summary !== activityBSummary) {
+        fail("archived B lost its checkpoint")
+        return
+      }
+      snapshots.push(snap("archived-access"))
+      p.switchActivity(activityId)
+      step = 25
+      stepTicks = 0
+      return
+    }
+
+    if (step === 25) {
+      if (!idle())
+        return
+      if (p.activity.id !== activityId) {
+        fail("switch back to A after archive failed")
+        return
+      }
+      if (p.current.summary !== secondSummary) {
+        fail("A checkpoint mixed with B after archive")
+        return
+      }
+      var history = p.historyEntries || []
+      if (history.length < 2) {
+        fail("A history missing dated pages")
+        return
+      }
+      if (!firstCheckpointId) {
+        fail("missing first checkpoint id")
+        return
+      }
+      snapshots.push(snap("history-before-restore"))
+      p.restoreCheckpoint(firstCheckpointId)
+      step = 26
+      stepTicks = 0
+      return
+    }
+
+    if (step === 26) {
+      if (!idle())
+        return
+      if (p.lastError !== "") {
+        fail("restore error: " + p.lastError)
+        return
+      }
+      if (p.current.summary !== expectedSummary) {
+        fail("restore did not bring first checkpoint forward")
+        return
+      }
+      if (p.revision !== 3) {
+        fail("restore did not append a new revision")
+        return
+      }
+      if (p.current.id === firstCheckpointId) {
+        fail("restore rewrote the original checkpoint id")
+        return
+      }
+      restoredCheckpointId = p.current.id
+      restoredRevision = p.revision
+      var historyAfter = p.historyEntries || []
+      if (historyAfter.length < 3) {
+        fail("restore lost intervening history")
+        return
+      }
+      snapshots.push(snap("restored"))
+      step = 27
+      stepTicks = 0
+      return
+    }
+
+    if (step === 27) {
+      if (!idle())
+        return
+      var picker = findActivityPicker(p)
+      if (!picker) {
+        fail("compact activityPicker not found")
+        return
+      }
+      if (picker.value !== activityId) {
+        fail("picker did not start on A: " + picker.value)
+        return
+      }
+      snapshots.push(snap("picker-start-a"))
+      p.editSummary = "Unsaved A draft before picker cancel"
+      p.dirty = true
+      picker.selectCurrent(activityBId)
+      step = 28
+      stepTicks = 0
+      return
+    }
+
+    if (step === 28) {
+      if (p.busy)
+        return
+      if (!p.switchPrompt) {
+        fail("picker dirty select did not prompt save/discard/cancel")
+        return
+      }
+      if (p.activity.id !== activityId) {
+        fail("picker dirty select switched activities")
+        return
+      }
+      if (p.editSummary !== "Unsaved A draft before picker cancel") {
+        fail("picker dirty select clobbered in-memory A draft")
+        return
+      }
+      snapshots.push(snap("picker-dirty-select"))
+      p.cancelSwitch()
+      if (p.switchPrompt) {
+        fail("cancelSwitch left the picker prompt visible")
+        return
+      }
+      if (p.activity.id !== activityId) {
+        fail("cancelSwitch still switched activities after picker select")
+        return
+      }
+      picker = findActivityPicker(p)
+      if (!picker) {
+        fail("compact activityPicker missing after dirty cancel")
+        return
+      }
+      if (picker.value !== activityId) {
+        fail("picker desync after dirty cancel")
+        return
+      }
+      snapshots.push(snap("picker-after-cancel"))
+      p.editSummary = "Unsaved A draft before failed switch"
+      p.dirty = true
+      picker.selectCurrent(activityBId)
+      step = 29
+      stepTicks = 0
+      return
+    }
+
+    if (step === 29) {
+      if (p.busy)
+        return
+      if (!p.switchPrompt) {
+        fail("failed-switch setup did not prompt")
+        return
+      }
+      if (p.activity.id !== activityId) {
+        fail("failed-switch setup left A")
+        return
+      }
+      revisionBeforeStale = p.revision
+      p.revision = p.revision + 50
+      p.confirmSwitchSave()
+      step = 30
+      stepTicks = 0
+      return
+    }
+
+    if (step === 30) {
+      if (!idle())
+        return
+      if (p.activity.id !== activityId) {
+        fail("stale save-switch left A")
+        return
+      }
+      if (p.editSummary !== "Unsaved A draft before failed switch") {
+        fail("stale save-switch discarded draft")
+        return
+      }
+      if (!p.dirty) {
+        fail("stale save-switch cleared dirty")
+        return
+      }
+      picker = findActivityPicker(p)
+      if (!picker) {
+        fail("compact activityPicker missing after failed switch")
+        return
+      }
+      if (picker.value !== activityId) {
+        fail("picker desync after failed switch")
+        return
+      }
+      snapshots.push(snap("picker-after-failed-switch"))
+      p.cancelSwitch()
+      p.revision = revisionBeforeStale
+      p.dirty = false
+      if (p.current)
+        p.editSummary = p.current.summary
+      picker.selectCurrent(activityBId)
+      step = 31
+      stepTicks = 0
+      return
+    }
+
+    if (step === 31) {
+      if (!idle())
+        return
+      if (p.activity.id !== activityBId) {
+        fail("picker completed switch did not land on B")
+        return
+      }
+      picker = findActivityPicker(p)
+      if (!picker) {
+        fail("compact activityPicker missing after completed switch")
+        return
+      }
+      if (picker.value !== activityBId) {
+        fail("picker desync after completed switch")
+        return
+      }
+      snapshots.push(snap("picker-completed-b"))
+      p.switchActivity(activityId)
+      step = 32
+      stepTicks = 0
+      return
+    }
+
+    if (step === 32) {
+      if (!idle())
+        return
+      if (p.activity.id !== activityId) {
+        fail("JS switch back to A failed")
+        return
+      }
+      picker = findActivityPicker(p)
+      if (!picker) {
+        fail("compact activityPicker missing after later activity change")
+        return
+      }
+      if (picker.value !== activityId) {
+        fail("picker desync after later activity change")
+        return
+      }
+      snapshots.push(snap("picker-follow-a"))
+      p.editSummary = dirtyCreateDraft
+      p.dirty = true
+      p.createName = "Personal"
+      p.createActivity()
+      step = 33
+      stepTicks = 0
+      return
+    }
+
+    if (step === 33) {
+      if (!idle())
+        return
+      if (!p.activity || p.activity.id !== activityId) {
+        fail("create while dirty switched activities")
+        return
+      }
+      if (p.activity.name === "Personal") {
+        fail("create while dirty created Personal")
+        return
+      }
+      if (p.editSummary !== dirtyCreateDraft) {
+        fail("create while dirty discarded the in-memory draft")
+        return
+      }
+      if (!p.dirty) {
+        fail("create while dirty cleared dirty")
+        return
+      }
+      if (!p.lastError) {
+        fail("create while dirty did not explain the refusal")
+        return
+      }
+      snapshots.push(snap("create-while-dirty-refused"))
       succeed()
     }
   }
