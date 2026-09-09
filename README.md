@@ -2,7 +2,9 @@
 
 A save point for your work — an Omarchy plugin for activity-based checkpoints, written by you or your agent.
 
-**In development. There is no installable plugin or released version yet.**
+**In development. There is no released or live-installed version yet.**
+
+The repository now includes the first implementation slice (issue #3): a native bar-widget plugin and a local SQLite store so one named activity can save and reopen a manual checkpoint. It is not enabled on a desktop, not an agent CLI, and not a release candidate.
 
 ## Planned experience
 
@@ -14,10 +16,19 @@ A save point for your work — an Omarchy plugin for activity-based checkpoints,
 ## Project records
 
 - [Approved product spec](docs/PRODUCT_SPEC.md)
+- [Issue #3 implementation notes](docs/IMPLEMENTATION.md)
 - [Contributing](CONTRIBUTING.md)
 - [Agent instructions](AGENTS.md)
 
-Next: review a visual prototype, then create the bounded implementation issues. GitHub issues will be the implementation backlog. No functionality or runtime compatibility is claimed by this documentation-only bootstrap.
+## Local checks
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
+python3 -m py_compile bin/breadcrumb-store tests/*.py
+git diff --check
+```
+
+Native Omarchy save/reopen/Panel-recreate is an isolated component test on the-cave (`tests/native/`). Passing Python tests is not live desktop acceptance. See `docs/IMPLEMENTATION.md`.
 
 ## Privacy and release
 

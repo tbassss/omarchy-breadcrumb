@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "tbassss.breadcrumb",
+  "name": "Breadcrumb",
+  "version": "0.1.0",
+  "author": "tbassss",
+  "license": "MIT",
+  "description": "Save and reopen a local activity checkpoint from the Omarchy bar.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Breadcrumb",
+    "description": "Manual activity checkpoint: status, next step, and local save/reopen.",
+    "category": "Info",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

@@ -1,0 +1,572 @@
+#!/usr/bin/env python3
+"""Breadcrumb local store — UI persistence seam for the native plugin.
+
+Not a public agent command interface (that is issue #6). QML calls this with
+an argv array and JSON on stdin or as a single argv payload. No shell.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+import stat
+import sys
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import urlparse
+
+SCHEMA_VERSION = 1
+DB_NAME = "breadcrumb.sqlite"
+ACTIVITY_NAME_MAX = 200
+SUMMARY_MAX = 500
+NEXT_STEP_MAX = 500
+CONTEXT_MAX = 8000
+AUTHOR_MAX = 200
+LINK_LABEL_MAX = 200
+LINK_TARGET_MAX = 2000
+STATES = ("ready", "in_progress", "waiting", "done")
+LINK_KINDS = ("web", "file", "folder")
+VIEWS = ("compact", "expanded")
+
+ERROR_CODES = {
+    "invalid_request": 2,
+    "validation": 3,
+    "stale_revision": 4,
+    "permission": 5,
+    "io": 6,
+    "schema": 7,
+}
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def data_dir() -> Path:
+    override = os.environ.get("BREADCRUMB_DATA_DIR")
+    if override:
+        return Path(override)
+    xdg = os.environ.get("XDG_DATA_HOME")
+    if xdg:
+        return Path(xdg) / "breadcrumb"
+    return Path.home() / ".local" / "share" / "breadcrumb"
+
+
+def fail(code: str, message: str, extra: dict | None = None, *, exit_status: int | None = None) -> None:
+    body = {"ok": False, "error": code, "message": message}
+    if extra:
+        body.update(extra)
+    print(json.dumps(body, ensure_ascii=False, separators=(",", ":")))
+    raise SystemExit(exit_status if exit_status is not None else ERROR_CODES.get(code, 1))
+
+
+def ok(payload: dict) -> None:
+    body = {"ok": True}
+    body.update(payload)
+    print(json.dumps(body, ensure_ascii=False, separators=(",", ":")))
+
+
+def load_payload(argv: list[str]) -> dict:
+    if len(argv) >= 2 and argv[1].strip():
+        try:
+            value = json.loads(argv[1])
+        except json.JSONDecodeError as exc:
+            fail("invalid_request", f"JSON payload is not valid: {exc.msg}")
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            fail("invalid_request", "JSON payload must be an object")
+        return value
+    raw = sys.stdin.read()
+    if not raw.strip():
+        return {}
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        fail("invalid_request", f"JSON payload is not valid: {exc.msg}")
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        fail("invalid_request", "JSON payload must be an object")
+    return value
+
+
+def ensure_private_dir(path: Path) -> None:
+    try:
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(path, 0o700)
+    except PermissionError:
+        fail("permission", f"Cannot create or access the Breadcrumb data directory: {path}")
+    except OSError as exc:
+        fail("io", f"Cannot create the Breadcrumb data directory: {exc}")
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except OSError as exc:
+        fail("io", f"Cannot inspect the Breadcrumb data directory: {exc}")
+    if mode & 0o077:
+        try:
+            os.chmod(path, 0o700)
+        except PermissionError:
+            fail("permission", f"Breadcrumb data directory is not user-only: {path}")
+
+
+def connect(path: Path) -> sqlite3.Connection:
+    ensure_private_dir(path)
+    db_path = path / DB_NAME
+    if db_path.exists() and not os.access(db_path, os.R_OK | os.W_OK):
+        fail("permission", f"Cannot open the Breadcrumb database: {db_path}")
+    if not os.access(path, os.R_OK | os.W_OK | os.X_OK):
+        fail("permission", f"Cannot access the Breadcrumb data directory: {path}")
+    try:
+        conn = sqlite3.connect(str(db_path), isolation_level=None)
+    except sqlite3.OperationalError as exc:
+        msg = str(exc).lower()
+        if "permission" in msg or "readonly" in msg or "read-only" in msg or "unable to open" in msg:
+            fail("permission", f"Cannot open the Breadcrumb database: {exc}")
+        fail("io", f"Cannot open the Breadcrumb database: {exc}")
+    except PermissionError:
+        fail("permission", f"Cannot open the Breadcrumb database: {db_path}")
+    try:
+        os.chmod(db_path, 0o600)
+    except PermissionError:
+        fail("permission", f"Cannot set user-only permissions on {db_path}")
+    except OSError as exc:
+        fail("io", f"Cannot set permissions on {db_path}: {exc}")
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = DELETE")
+    conn.execute("PRAGMA synchronous = FULL")
+    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA temp_store = MEMORY")
+    return conn
+
+
+def init_schema(conn: sqlite3.Connection) -> None:
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_meta (
+                version INTEGER NOT NULL
+            )
+            """
+        )
+        row = conn.execute("SELECT version FROM schema_meta LIMIT 1").fetchone()
+        if row is None:
+            conn.execute("INSERT INTO schema_meta(version) VALUES (?)", (SCHEMA_VERSION,))
+        elif int(row["version"]) != SCHEMA_VERSION:
+            conn.execute("ROLLBACK")
+            fail(
+                "schema",
+                f"Unsupported Breadcrumb store version {row['version']} (expected {SCHEMA_VERSION})",
+            )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS activities (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS checkpoints (
+                id TEXT PRIMARY KEY,
+                activity_id TEXT NOT NULL REFERENCES activities(id),
+                revision INTEGER NOT NULL,
+                summary TEXT NOT NULL,
+                next_step TEXT,
+                context TEXT,
+                state TEXT NOT NULL,
+                author TEXT NOT NULL,
+                saved_at TEXT NOT NULL,
+                UNIQUE (activity_id, revision)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS checkpoint_links (
+                checkpoint_id TEXT NOT NULL REFERENCES checkpoints(id),
+                position INTEGER NOT NULL,
+                label TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                target TEXT NOT NULL,
+                PRIMARY KEY (checkpoint_id, position)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS prefs (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("COMMIT")
+    except sqlite3.Error:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def plain_text(value: object, *, field: str, required: bool, max_len: int, allow_empty: bool = False) -> str | None:
+    if value is None:
+        if required:
+            fail("validation", f"{field} is required")
+        return None
+    if not isinstance(value, str):
+        fail("validation", f"{field} must be plain text")
+    if "\x00" in value:
+        fail("validation", f"{field} contains a NUL byte")
+    text = value.replace("\r\n", "\n").replace("\r", "\n")
+    if field != "context":
+        text = text.strip()
+        if any(ord(ch) < 32 and ch not in "\t" for ch in text):
+            fail("validation", f"{field} must be plain text without control characters")
+    else:
+        if any(ord(ch) < 32 and ch not in "\t\n" for ch in text):
+            fail("validation", f"{field} must be plain text without control characters")
+        text = text.strip()
+    if not text and not allow_empty:
+        if required:
+            fail("validation", f"{field} is required")
+        return None
+    if len(text) > max_len:
+        fail("validation", f"{field} is too long (max {max_len} characters)")
+    return text
+
+
+def cmd_ensure_activity(conn: sqlite3.Connection, payload: dict) -> None:
+    name = plain_text(payload.get("name"), field="name", required=True, max_len=ACTIVITY_NAME_MAX)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        existing = conn.execute(
+            "SELECT id, name, created_at FROM activities ORDER BY created_at ASC, id ASC LIMIT 1"
+        ).fetchone()
+        if existing is not None:
+            conn.execute("COMMIT")
+            ok({"activity": {"id": existing["id"], "name": existing["name"], "created_at": existing["created_at"]}})
+            return
+        activity_id = str(uuid.uuid4())
+        created_at = utc_now()
+        conn.execute(
+            "INSERT INTO activities(id, name, created_at) VALUES (?, ?, ?)",
+            (activity_id, name, created_at),
+        )
+        conn.execute("COMMIT")
+    except sqlite3.Error as exc:
+        conn.execute("ROLLBACK")
+        fail("io", f"Could not save the activity: {exc}")
+    ok({"activity": {"id": activity_id, "name": name, "created_at": created_at}})
+
+
+def load_activity(conn: sqlite3.Connection, activity_id: str | None) -> sqlite3.Row | None:
+    if activity_id:
+        return conn.execute(
+            "SELECT id, name, created_at FROM activities WHERE id = ?",
+            (activity_id,),
+        ).fetchone()
+    return conn.execute(
+        "SELECT id, name, created_at FROM activities ORDER BY created_at ASC, id ASC LIMIT 1"
+    ).fetchone()
+
+
+def pref(conn: sqlite3.Connection, key: str, default: str) -> str:
+    row = conn.execute("SELECT value FROM prefs WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row is not None else default
+
+
+def activity_payload(row: sqlite3.Row) -> dict:
+    return {"id": row["id"], "name": row["name"], "created_at": row["created_at"]}
+
+
+def load_links(conn: sqlite3.Connection, checkpoint_id: str) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT label, kind, target
+        FROM checkpoint_links
+        WHERE checkpoint_id = ?
+        ORDER BY position ASC
+        """,
+        (checkpoint_id,),
+    ).fetchall()
+    return [{"label": row["label"], "kind": row["kind"], "target": row["target"]} for row in rows]
+
+
+def checkpoint_payload(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "activity_id": row["activity_id"],
+        "revision": int(row["revision"]),
+        "summary": row["summary"],
+        "next_step": row["next_step"],
+        "context": row["context"],
+        "state": row["state"],
+        "author": row["author"],
+        "saved_at": row["saved_at"],
+        "links": load_links(conn, row["id"]),
+    }
+
+
+def latest_checkpoint(conn: sqlite3.Connection, activity_id: str) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT id, activity_id, revision, summary, next_step, context, state, author, saved_at
+        FROM checkpoints
+        WHERE activity_id = ?
+        ORDER BY revision DESC
+        LIMIT 1
+        """,
+        (activity_id,),
+    ).fetchone()
+
+
+def latest_revision(conn: sqlite3.Connection, activity_id: str) -> int:
+    row = conn.execute(
+        "SELECT MAX(revision) AS revision FROM checkpoints WHERE activity_id = ?",
+        (activity_id,),
+    ).fetchone()
+    if row is None or row["revision"] is None:
+        return 0
+    return int(row["revision"])
+
+
+def validate_web_target(target: str) -> str:
+    parsed = urlparse(target)
+    if parsed.scheme not in {"http", "https"}:
+        fail("validation", "Web links must use http or https")
+    if not parsed.netloc:
+        fail("validation", "Web links must include a host")
+    if parsed.username or parsed.password:
+        fail("validation", "Web links cannot include credentials")
+    return target
+
+
+def validate_path_target(target: str) -> str:
+    if not target.startswith("/"):
+        fail("validation", "File and folder links must be absolute paths")
+    if any(ch in target for ch in ("\n", "\r", "\x00")):
+        fail("validation", "File and folder links cannot contain control characters")
+    banned = ("|", ";", "&", "`", "$", "(", ")", "<", ">", "\n")
+    if any(ch in target for ch in banned):
+        fail("validation", "File and folder links cannot contain shell metacharacters")
+    return target
+
+
+def validate_link(raw: object, index: int) -> dict:
+    field = f"links[{index}]"
+    if not isinstance(raw, dict):
+        fail("validation", f"{field} must be an object")
+    label = plain_text(raw.get("label"), field=f"{field}.label", required=True, max_len=LINK_LABEL_MAX)
+    kind = raw.get("kind")
+    if kind not in LINK_KINDS:
+        fail("validation", f"{field}.kind must be web, file, or folder")
+    target = plain_text(raw.get("target"), field=f"{field}.target", required=True, max_len=LINK_TARGET_MAX)
+    if kind == "web":
+        target = validate_web_target(target)
+    else:
+        target = validate_path_target(target)
+    return {"label": label, "kind": kind, "target": target}
+
+
+def validate_links(raw: object) -> list[dict]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        fail("validation", "links must be a list")
+    if len(raw) > 20:
+        fail("validation", "Too many links (max 20)")
+    return [validate_link(item, index) for index, item in enumerate(raw)]
+
+
+def validate_state(value: object) -> str:
+    if value not in STATES:
+        fail("validation", "state must be ready, in_progress, waiting, or done")
+    return str(value)
+
+
+def expected_revision_value(value: object) -> int:
+    if value is None:
+        fail("validation", "expected_revision is required")
+    if isinstance(value, bool) or not isinstance(value, int):
+        fail("validation", "expected_revision must be an integer")
+    if value < 0:
+        fail("validation", "expected_revision cannot be negative")
+    return value
+
+
+def cmd_get(conn: sqlite3.Connection, payload: dict) -> None:
+    activity_id = payload.get("activity_id")
+    if activity_id is not None and not isinstance(activity_id, str):
+        fail("validation", "activity_id must be text")
+    activity = load_activity(conn, activity_id)
+    view = pref(conn, "view", "compact")
+    if activity is None:
+        ok({"state": "empty", "activity": None, "current": None, "revision": 0, "view": view})
+        return
+    current_row = latest_checkpoint(conn, activity["id"])
+    if current_row is None:
+        ok(
+            {
+                "state": "empty",
+                "activity": activity_payload(activity),
+                "current": None,
+                "revision": 0,
+                "view": view,
+            }
+        )
+        return
+    current = checkpoint_payload(conn, current_row)
+    ok(
+        {
+            "state": "ready",
+            "activity": activity_payload(activity),
+            "current": current,
+            "revision": current["revision"],
+            "view": view,
+        }
+    )
+
+
+def cmd_publish(conn: sqlite3.Connection, payload: dict) -> None:
+    activity_id = payload.get("activity_id")
+    if not isinstance(activity_id, str) or not activity_id:
+        fail("validation", "activity_id is required")
+    expected = expected_revision_value(payload.get("expected_revision"))
+    state = validate_state(payload.get("state"))
+    summary = plain_text(payload.get("summary"), field="summary", required=True, max_len=SUMMARY_MAX)
+    next_required = state != "done"
+    next_step = plain_text(
+        payload.get("next_step"),
+        field="next_step",
+        required=next_required,
+        max_len=NEXT_STEP_MAX,
+        allow_empty=not next_required,
+    )
+    context = plain_text(payload.get("context"), field="context", required=False, max_len=CONTEXT_MAX)
+    author = plain_text(payload.get("author"), field="author", required=True, max_len=AUTHOR_MAX)
+    links = validate_links(payload.get("links"))
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        activity = load_activity(conn, activity_id)
+        if activity is None:
+            conn.execute("ROLLBACK")
+            fail("validation", "Unknown activity")
+        current = latest_revision(conn, activity_id)
+        if current != expected:
+            conn.execute("ROLLBACK")
+            fail(
+                "stale_revision",
+                "A newer checkpoint was saved. Reload before saving.",
+                {"current_revision": current, "expected_revision": expected},
+            )
+        checkpoint_id = str(uuid.uuid4())
+        revision = current + 1
+        saved_at = utc_now()
+        conn.execute(
+            """
+            INSERT INTO checkpoints(
+                id, activity_id, revision, summary, next_step, context, state, author, saved_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (checkpoint_id, activity_id, revision, summary, next_step, context, state, author, saved_at),
+        )
+        for position, link in enumerate(links):
+            conn.execute(
+                """
+                INSERT INTO checkpoint_links(checkpoint_id, position, label, kind, target)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (checkpoint_id, position, link["label"], link["kind"], link["target"]),
+            )
+        conn.execute("COMMIT")
+    except SystemExit:
+        raise
+    except sqlite3.IntegrityError:
+        conn.execute("ROLLBACK")
+        current = latest_revision(conn, activity_id)
+        fail(
+            "stale_revision",
+            "A newer checkpoint was saved. Reload before saving.",
+            {"current_revision": current, "expected_revision": expected},
+        )
+    except sqlite3.Error as exc:
+        conn.execute("ROLLBACK")
+        fail("io", f"Could not save the checkpoint: {exc}")
+    row = conn.execute(
+        """
+        SELECT id, activity_id, revision, summary, next_step, context, state, author, saved_at
+        FROM checkpoints WHERE id = ?
+        """,
+        (checkpoint_id,),
+    ).fetchone()
+    current = checkpoint_payload(conn, row)
+    ok({"current": current, "revision": current["revision"], "state": "ready"})
+
+
+def cmd_set_view(conn: sqlite3.Connection, payload: dict) -> None:
+    view = payload.get("view")
+    if view not in VIEWS:
+        fail("validation", "view must be compact or expanded")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(
+            "INSERT INTO prefs(key, value) VALUES ('view', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (view,),
+        )
+        conn.execute("COMMIT")
+    except sqlite3.Error as exc:
+        conn.execute("ROLLBACK")
+        fail("io", f"Could not save the view preference: {exc}")
+    ok({"view": view})
+
+
+def cmd_validate_link(payload: dict) -> None:
+    kind = payload.get("kind")
+    if kind not in LINK_KINDS:
+        fail("validation", "kind must be web, file, or folder")
+    target = plain_text(payload.get("target"), field="target", required=True, max_len=LINK_TARGET_MAX)
+    if kind == "web":
+        target = validate_web_target(target)
+    else:
+        target = validate_path_target(target)
+    ok({"kind": kind, "target": target, "open_argv": ["xdg-open", "--", target]})
+
+
+COMMANDS = {
+    "ensure-activity": cmd_ensure_activity,
+    "get": cmd_get,
+    "publish": cmd_publish,
+    "set-view": cmd_set_view,
+}
+
+
+def main(argv: list[str]) -> None:
+    if not argv or argv[0] in {"-h", "--help"}:
+        fail("invalid_request", "Usage: breadcrumb-store <command> [json]", exit_status=2)
+    command = argv[0]
+    if command not in COMMANDS and command != "validate-link":
+        fail("invalid_request", f"Unknown command: {command}")
+    payload = load_payload(argv)
+    if command == "validate-link":
+        cmd_validate_link(payload)
+        return
+    handler = COMMANDS[command]
+    conn = None
+    try:
+        conn = connect(data_dir())
+        init_schema(conn)
+        handler(conn, payload)
+    except sqlite3.Error as exc:
+        fail("io", f"Store error: {exc}")
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

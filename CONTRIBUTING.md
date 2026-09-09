@@ -15,7 +15,7 @@ Use fictional checkpoints and screenshots. Do not commit credentials, real user 
 
 ## Current verification
 
-This repository currently contains documentation and templates only. No plugin tests or CI checks exist yet. Check Markdown links, issue-template frontmatter, and `git diff --check`. Add executable tests with the first implementation slice; passing documentation checks does not prove plugin behavior.
+The first implementation slice (issue #3) adds a native plugin layout and a Python 3 stdlib SQLite store. Run `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v`, `python3 -m py_compile bin/breadcrumb-store tests/*.py`, Markdown link checks, issue-template frontmatter, and `git diff --check`. Store tests cover persistence, CAS, faults, permissions, and safe links. Plugin tests are source contracts, not Omarchy runtime evidence. Isolated native Compact/Expanded save/reopen/Panel-recreate is `tests/native/` on the-cave (component test, not live desktop acceptance). See `docs/IMPLEMENTATION.md`.
 
 ## Release boundary
 
