@@ -2,11 +2,11 @@
 
 A save point for your work — an Omarchy plugin for activity-based checkpoints, written by you or your agent.
 
-**Not a published release.** This tree is first-candidate *preparation* for
-[issue #8](https://github.com/tbassss/omarchy-breadcrumb/issues/8). It is not
-live-installed, not directory-listed, and not verified by owner dogfood.
-Passing Python tests and isolated offscreen component tests are not live
-desktop acceptance.
+**Not a published release.** The candidate is installed on the owner’s host,
+with core live journeys verified and the bread icon accepted. Final live
+layout/theme checks remain; the repository is private and not directory-listed.
+See [current release evidence](docs/RELEASE_PREP.md) and
+[issue #8](https://github.com/tbassss/omarchy-breadcrumb/issues/8).
 
 License: MIT. Copyright (c) 2026 tbassss. See [LICENSE](LICENSE).
 

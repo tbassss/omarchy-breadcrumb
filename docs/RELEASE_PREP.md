@@ -1,4 +1,40 @@
-# Issue #8 release-candidate preparation
+# Issue #8 release-candidate verification
+
+## Current status (supersedes historical prep below)
+
+Installed and independently source-reviewed runtime candidate:
+`9cdf2a75f34e197e2f0eea1327561959fbd27739`.
+Panel SHA-256: `32f61045d6c17faacd964de79205fcf27c1fd3fd3f381ad95dc5239b3329f18d`.
+Store bytes remain unchanged from the base. Do not reinstall the older disk-icon base.
+Subsequent documentation-only commits do not change this runtime identity.
+
+Independent AI-assisted review: 70 tests passed, no new runtime defect.
+See [review report](FINAL_REVIEW.md) for exact scope and limitations.
+The review did **not** clear issue #8 closure or publication.
+
+Issue #8 records owner-confirmed live save/reopen, activity isolation/archive,
+agent update with draft preservation, explicit conflict resolution, history restore,
+draft recovery through shell restart, accepted bread icon, and removal/reinstall.
+Removal/reinstall preserved the exact logical database; shell config was unchanged.
+Private rollback backup on Cave: `~/.local/state/breadcrumb-reinstall/20260909-152858`
+(plugin, shell.json, SQLite online backup, receipt). Restore only under explicit
+approval; never automatically overwrite current user data with an older backup.
+
+Remaining acceptance: live theme and dual-monitor placement, actual host Escape /
+popout switching / overflow behavior, distinct compact published reopen after
+restart; alternate conflict paths and missing-file opening remain component-tested
+rather than owner-confirmed live. The native component suite has not been rerun
+after the icon change. These are evidence gaps, not demonstrated runtime defects.
+
+Repository remains private. Merge, public visibility, tag/release, and directory
+submission remain separate approvals. None was performed by this review.
+
+## Historical preparation snapshot — not current installation instructions
+
+Everything below records the initial pre-install preparation at the old base.
+Its hashes, counts, unrun checks and absence statements are historical, not current
+candidate identity or current blockers. Consult the current status above and issue #8.
+
 
 Not a published release. Not a directory listing. Not live-installed.
 Parent owns frozen review, merge, publication, and listing.

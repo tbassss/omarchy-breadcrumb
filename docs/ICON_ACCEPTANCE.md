@@ -14,7 +14,7 @@ The original disk glyph communicated saving but not Breadcrumb's identity. The o
 
 ## Limitations and remaining work
 
-Live rescan did not visually replace the old icon; a separately approved shell restart did. Duplicate-handler warnings were observed but causality was not established. Theme repaint and size handlers are covered as source contracts, not a newly exercised live theme/monitor matrix. Full isolated native suite was not rerun for this icon-only import; earlier native evidence predates it. Removal/reinstall testing remains paused. This is not merge, public-release or directory-submission approval.
+Live rescan did not visually replace the old icon; a separately approved shell restart did. Duplicate-handler warnings were observed but causality was not established. Theme repaint and size handlers are covered as source contracts, not a newly exercised live theme/monitor matrix. Full isolated native suite was not rerun for this icon-only import; earlier native evidence predates it. Removal/reinstall of runtime candidate `9cdf2a75f34e197e2f0eea1327561959fbd27739` subsequently passed: exact logical database equality and owner-confirmed activities/history/draft recovery (issue #8). This is not merge, public-release or directory-submission approval.
 
 ## Live rollback
 

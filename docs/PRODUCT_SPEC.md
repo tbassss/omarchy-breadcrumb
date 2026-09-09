@@ -1,7 +1,7 @@
 # Breadcrumb — Product Spec
 
 Status: Product behavior approved by Tyler in conversation. Implementation slices #3–#7 exist in this repository; issue #8 is release-candidate preparation only.
-Stage: First-candidate prep. Not live-installed and not a published release.
+Stage: Installed private candidate; core live journeys verified. Remaining acceptance is tracked in RELEASE_PREP.md and issue #8. Not a published release.
 Mainframe Build Tracker: None.
 
 ## Purpose
