@@ -1,0 +1,14 @@
+# Local tooling and runtime data must never enter source history
+.hermes/
+.env
+.env.*
+!.env.example
+__pycache__/
+*.pyc
+node_modules/
+.venv/
+.DS_Store
+runtime-data/
+private/
+*.sqlite
+*.sqlite-*
