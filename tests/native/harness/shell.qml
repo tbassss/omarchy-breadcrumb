@@ -1,10 +1,14 @@
 import Quickshell
 import Quickshell.Io
 import QtQuick
+import QtQuick.Window
+import QtTest
 
-// Isolated offscreen component driver for Breadcrumb #6 Panel.qml.
-// Classification: real candidate Panel.qml + real qs/Qt runtime + minimal
-// fake qs.Ui/qs.Commons. Not full omarchy-shell host integration.
+// Isolated offscreen component driver for Breadcrumb #7 Panel.qml.
+// Classification: real candidate Panel.qml + real qs/Qt runtime + packaged
+// qs.Ui/qs.Commons controls (Cave overlay). KeyboardPanel and host Panel
+// remain stubs to avoid WlrLayershell / live IPC. Not full omarchy-shell
+// host integration. Not a live bar install.
 //
 // Retains #3–#5 save/reopen/recreate, drafts, and store-seam conflict,
 // then public CLI open-panel refresh and closed-panel reopen.
@@ -54,6 +58,12 @@ ShellRoot {
   property int closedExpectedRevision: 0
   property bool externalDone: false
   property var qmlErrors: []
+  property var screenshots: []
+  property var geometries: []
+  property bool grabPending: false
+  property string longSummary: "Lantern inventory overflow: brass, copper, wick oil, spare chimneys, tunnel maps, and the east gallery ledger. " + "Repeat the catalog so Compact must elide. "
+  property string missingFile: "/tmp/breadcrumb-missing-lantern-map.txt"
+  property int manyActivityTarget: 8
 
   function panelObj() {
     return panelLoader.item
@@ -62,7 +72,7 @@ ShellRoot {
   function findActivityPicker(item) {
     if (!item)
       return null
-    if (item.label === "Activity" && typeof item.selectCurrent === "function")
+    if (item.label === "Activity")
       return item
     var kids = item.children
     if (!kids)
@@ -73,6 +83,72 @@ ShellRoot {
         return found
     }
     return null
+  }
+
+  function findNamed(item, name) {
+    if (!item)
+      return null
+    if (item.objectName === name)
+      return item
+    var kids = item.children
+    if (!kids)
+      return null
+    for (var i = 0; i < kids.length; i++) {
+      var found = findNamed(kids[i], name)
+      if (found)
+        return found
+    }
+    return null
+  }
+
+  function simulatePickerSelect(picker, value) {
+    picker.value = value
+    picker.changed(value)
+  }
+
+  function geomOf(name) {
+    var item = findNamed(panelObj(), name)
+    if (!item)
+      return { name: name, missing: true }
+    return {
+      name: name,
+      x: item.x,
+      y: item.y,
+      width: item.width,
+      height: item.height,
+      implicitHeight: item.implicitHeight || 0,
+      visible: !!item.visible,
+      text: item.text !== undefined ? String(item.text) : ""
+    }
+  }
+
+  function grabShot(tag) {
+    var target = findNamed(panelObj(), "breadcrumbPanel")
+    if (!target)
+      target = hostWindow.contentItem
+    if (!target || typeof target.grabToImage !== "function") {
+      screenshots.push({ tag: tag, error: "grabToImage missing" })
+      return
+    }
+    grabPending = true
+    target.grabToImage(function(result) {
+      var dir = Quickshell.env("BREADCRUMB_EVIDENCE")
+      var path = dir + "/screenshots/" + tag + ".png"
+      var saved = false
+      try {
+        saved = result.saveToFile(path)
+      } catch (e) {
+        saved = false
+      }
+      screenshots.push({
+        tag: tag,
+        path: path,
+        saved: saved,
+        width: target.width,
+        height: target.height
+      })
+      grabPending = false
+    })
   }
 
   function snap(tag) {
@@ -124,7 +200,13 @@ ShellRoot {
       historyCount: history.length,
       showArchived: !!p.showArchived,
       pickerValue: picker ? picker.value : "",
-      storePath: p.storePath
+      storePath: p.storePath,
+      lastOpenArgv: p.lastOpenArgv || [],
+      compactSummary: geomOf("compactSummary"),
+      compactColumn: geomOf("compactColumn"),
+      expandButton: geomOf("expandButton"),
+      activityScroller: geomOf("activityScroller"),
+      panelBox: geomOf("breadcrumbPanel")
     }
   }
 
@@ -141,8 +223,10 @@ ShellRoot {
       savedRevision: savedRevision,
       restoredRevision: restoredRevision,
       qmlErrors: qmlErrors,
+      screenshots: screenshots,
+      geometries: geometries,
       classification: "component-test-not-full-host-integration",
-      notes: "Real Panel.qml driven through createActivity/saveCheckpoint/saveDraft/switchActivity/archiveActivity/restoreCheckpoint, genuine in-memory draft refresh, Loader recreate of a durable draft, compact published+indicator, native conflictPrompt after store publish, and public CLI open/closed refresh. Host qs.Ui/qs.Commons are a minimal facade of inspected Cave APIs. KeyboardPanel is stubbed to avoid WlrLayershell. Not a live bar install."
+      notes: "Real Panel.qml driven through createActivity/saveCheckpoint/saveDraft/switchActivity/archiveActivity/restoreCheckpoint, genuine in-memory draft refresh, Loader recreate of a durable draft, compact published+indicator, native conflictPrompt after store publish, public CLI open/closed refresh, Compact/Expanded polish, keyboard/geometry/screenshots. Packaged qs.Ui Button/Dropdown/TextField/Color/Style are overlaid. KeyboardPanel and host Panel are stubs (no WlrLayershell, no live IPC). Not a live bar install. Not dual-monitor/theme/layershell acceptance."
     }
     if (extra) {
       for (var k in extra)
@@ -235,14 +319,30 @@ ShellRoot {
     externalPub.running = true
   }
 
-  Loader {
-    id: panelLoader
-    active: true
-    source: pluginDir !== "" ? ("file://" + pluginDir + "/Panel.qml") : ""
+  Window {
+    id: hostWindow
+    width: 960
+    height: 1400
+    visible: true
+    color: "#101315"
+    title: "breadcrumb-isolated-harness"
+
+    Loader {
+      id: panelLoader
+      anchors.fill: parent
+      active: true
+      source: pluginDir !== "" ? ("file://" + pluginDir + "/Panel.qml") : ""
+    }
+
+    TestCase {
+      id: keyDriver
+      name: "keyInjector"
+      when: false
+    }
   }
 
   Timer {
-    interval: 120000
+    interval: 180000
     running: true
     repeat: false
     onTriggered: fail("watchdog timeout at step " + step)
@@ -263,6 +363,8 @@ ShellRoot {
 
   function tick() {
     if (finished)
+      return
+    if (grabPending)
       return
     ticks += 1
     stepTicks += 1
@@ -291,6 +393,10 @@ ShellRoot {
         return
       if (p.loadState === "error") {
         fail("initial load error: " + p.lastError)
+        return
+      }
+      if (p.view !== "compact") {
+        fail("first-use default was not compact")
         return
       }
       snapshots.push(snap("initial"))
@@ -1022,7 +1128,7 @@ ShellRoot {
         fail("compact activityPicker missing before picker switch")
         return
       }
-      picker.selectCurrent(activityBId)
+      simulatePickerSelect(picker, activityBId)
       step = 37
       stepTicks = 0
       return
@@ -1461,6 +1567,339 @@ ShellRoot {
         return
       }
       snapshots.push(snap("closed-panel-public"))
+      if (!p.opened)
+        p.open()
+      step = 60
+      stepTicks = 0
+      return
+    }
+
+    if (step === 60) {
+      if (!p.opened)
+        return
+      if (!idle())
+        return
+      if (p.conflictPrompt) {
+        p.resolveConflictLoadPublished()
+        return
+      }
+      if (p.hasDraft) {
+        p.discardDraft()
+        return
+      }
+      if (p.expanded)
+        p.toggleView()
+      step = 61
+      stepTicks = 0
+      return
+    }
+
+    if (step === 61) {
+      if (!idle())
+        return
+      if (p.expanded) {
+        fail("expected compact before long-content glance")
+        return
+      }
+      p.toggleView()
+      step = 62
+      stepTicks = 0
+      return
+    }
+
+    if (step === 62) {
+      if (!idle())
+        return
+      if (!p.expanded) {
+        fail("expected expanded before long summary save")
+        return
+      }
+      var pad = ""
+      for (var li = 0; li < 4; li++)
+        pad += longSummary
+      if (pad.length > 480)
+        pad = pad.slice(0, 480)
+      p.editSummary = pad
+      p.saveCheckpoint()
+      step = 63
+      stepTicks = 0
+      return
+    }
+
+    if (step === 63) {
+      if (!idle())
+        return
+      if (!p.hasCurrent) {
+        fail("long summary did not publish")
+        return
+      }
+      p.toggleView()
+      step = 64
+      stepTicks = 0
+      return
+    }
+
+    if (step === 64) {
+      if (!idle())
+        return
+      if (p.expanded) {
+        fail("expected compact after long publish")
+        return
+      }
+      var glance = findNamed(p, "compactSummary")
+      if (!glance || glance.height <= 0) {
+        fail("compact summary missing geometry")
+        return
+      }
+      if (glance.height > 64) {
+        fail("compact glance grew unbounded: " + glance.height)
+        return
+      }
+      if (String(p.current.summary).length <= 80) {
+        fail("published summary was not long")
+        return
+      }
+      geometries.push({ tag: "compact-long", summaryHeight: glance.height, summaryWidth: glance.width, panelHeight: geomOf("breadcrumbPanel").height })
+      snapshots.push(snap("compact-long"))
+      grabShot("screenshot-compact")
+      step = 65
+      stepTicks = 0
+      return
+    }
+
+    if (step === 65) {
+      if (grabPending)
+        return
+      p.toggleView()
+      step = 66
+      stepTicks = 0
+      return
+    }
+
+    if (step === 66) {
+      if (!idle())
+        return
+      if (!p.expanded) {
+        fail("expected expanded full text")
+        return
+      }
+      var editor = findNamed(p, "expandedSummary")
+      if (!editor) {
+        fail("expanded summary field missing")
+        return
+      }
+      if (String(editor.text).length !== String(p.current.summary).length) {
+        fail("expanded did not keep full text")
+        return
+      }
+      geometries.push({ tag: "expanded-full", editorTextLen: String(editor.text).length, panelHeight: geomOf("breadcrumbPanel").height })
+      snapshots.push(snap("expanded-full"))
+      grabShot("screenshot-expanded")
+      step = 67
+      stepTicks = 0
+      return
+    }
+
+    if (step === 67) {
+      if (grabPending)
+        return
+      p.contentWidthHint = 360
+      step = 68
+      stepTicks = 0
+      return
+    }
+
+    if (step === 68) {
+      if (!idle())
+        return
+      if (!p.narrow) {
+        fail("narrow width did not stack expanded layout")
+        return
+      }
+      geometries.push({ tag: "narrow", panelWidth: geomOf("breadcrumbPanel").width, sidebar: geomOf("activitySidebar"), narrow: p.narrow })
+      snapshots.push(snap("narrow"))
+      grabShot("screenshot-narrow")
+      step = 69
+      stepTicks = 0
+      return
+    }
+
+    if (step === 69) {
+      if (grabPending)
+        return
+      p.contentWidthHint = 0
+      p.toggleView()
+      step = 70
+      stepTicks = 0
+      return
+    }
+
+    if (step === 70) {
+      if (!idle())
+        return
+      var expandBtn = findNamed(p, "expandButton")
+      if (!expandBtn) {
+        fail("expand button missing")
+        return
+      }
+      expandBtn.forceActiveFocus()
+      if (!expandBtn.activeFocus) {
+        fail("expand button did not take focus")
+        return
+      }
+      var beforeView = p.view
+      keyDriver.keyClick(Qt.Key_Return)
+      step = 71
+      stepTicks = 0
+      return
+    }
+
+    if (step === 71) {
+      if (!idle())
+        return
+      if (p.view === "compact") {
+        fail("keyboard expand did not toggle view")
+        return
+      }
+      snapshots.push(snap("keyboard-expand"))
+      p.openValidatedLink("file", missingFile)
+      step = 72
+      stepTicks = 0
+      return
+    }
+
+    if (step === 72) {
+      if (!idle())
+        return
+      var err = String(p.lastError || "").toLowerCase()
+      if (err.indexOf("missing") < 0) {
+        fail("missing-file error was not visible: " + p.lastError)
+        return
+      }
+      if (p.lastOpenArgv && p.lastOpenArgv.length) {
+        fail("missing file still produced open argv")
+        return
+      }
+      snapshots.push(snap("missing-file"))
+      p.openValidatedLink("web", "javascript:alert(1)")
+      step = 73
+      stepTicks = 0
+      return
+    }
+
+    if (step === 73) {
+      if (!idle())
+        return
+      if (p.lastOpenArgv && p.lastOpenArgv.length) {
+        fail("javascript link produced open argv")
+        return
+      }
+      if (!p.lastError) {
+        fail("rejected web scheme had no visible error")
+        return
+      }
+      p.openValidatedLink("web", "https://example.com/notes")
+      step = 74
+      stepTicks = 0
+      return
+    }
+
+    if (step === 74) {
+      if (!idle())
+        return
+      var argv = p.lastOpenArgv || []
+      if (argv.length !== 3 || argv[0] !== "xdg-open" || argv[1] !== "--" || argv[2] !== "https://example.com/notes") {
+        fail("safe web open argv mismatch: " + JSON.stringify(argv))
+        return
+      }
+      snapshots.push(snap("safe-web-open"))
+      p.createName = "An extremely long fictional activity name for the east tunnel mapping crew and lantern inventory overflow"
+      p.createActivity()
+      step = 75
+      stepTicks = 0
+      return
+    }
+
+    if (step === 75) {
+      if (!idle())
+        return
+      if ((p.activities || []).length < manyActivityTarget) {
+        p.createName = "Tunnel " + String((p.activities || []).length + 1)
+        p.createActivity()
+        stepTicks = 0
+        return
+      }
+      var scroller = findNamed(p, "activityScroller")
+      if (!scroller) {
+        fail("activity scroller missing")
+        return
+      }
+      if (scroller.height > 280) {
+        fail("many activities unbounded: " + scroller.height)
+        return
+      }
+      geometries.push({ tag: "many-activities", count: (p.activities || []).length, scrollerHeight: scroller.height, contentHeight: scroller.contentHeight || 0 })
+      snapshots.push(snap("many-activities"))
+      grabShot("screenshot-many-activities")
+      step = 76
+      stepTicks = 0
+      return
+    }
+
+    if (step === 76) {
+      if (grabPending)
+        return
+      if (!p.expanded)
+        p.toggleView()
+      step = 77
+      stepTicks = 0
+      return
+    }
+
+    if (step === 77) {
+      if (!idle())
+        return
+      if (p.view !== "expanded") {
+        fail("view was not expanded before remember recreate")
+        return
+      }
+      panelLoader.active = false
+      step = 78
+      stepTicks = 0
+      return
+    }
+
+    if (step === 78) {
+      if (panelLoader.item)
+        return
+      panelLoader.active = true
+      step = 79
+      stepTicks = 0
+      return
+    }
+
+    if (step === 79) {
+      if (panelLoader.status === Loader.Error) {
+        fail("remember-view recreate failed to load")
+        return
+      }
+      if (panelLoader.status !== Loader.Ready || !panelObj())
+        return
+      p = panelObj()
+      step = 80
+      stepTicks = 0
+      return
+    }
+
+    if (step === 80) {
+      p = panelObj()
+      if (!idle())
+        return
+      if (p.view !== "expanded") {
+        fail("remembered view was not expanded")
+        return
+      }
+      snapshots.push(snap("remember-expanded"))
       succeed()
     }
   }

@@ -54,6 +54,8 @@ Panel {
   property bool historyHasMore: false
   property var historyNextBefore: null
   property bool showArchived: false
+  property var lastOpenArgv: []
+  property int contentWidthHint: 0
 
   readonly property bool busy: storeProc.running
   readonly property bool expanded: root.view === "expanded"
@@ -63,7 +65,9 @@ Panel {
   readonly property string commandPath: Model.fileFromUrl(Qt.resolvedUrl("bin/breadcrumb"))
   readonly property color fg: root.bar ? root.bar.foreground : Color.foreground
   readonly property color urgent: root.bar ? root.bar.urgent : Color.urgent
+  readonly property color muted: Color.muted
   readonly property string fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+  readonly property bool narrow: column.width < Style.space(560)
 
   function buildActivityOptions() {
     var opts = []
@@ -570,7 +574,15 @@ Panel {
 
   function openValidatedLink(kind, target) {
     root.pendingOpen = { kind: kind, target: target }
+    root.lastOpenArgv = []
     runStore("validate-link", { kind: kind, target: target })
+  }
+
+  function launchOpenArgv(argv) {
+    root.lastOpenArgv = argv
+    if (Quickshell.env("BREADCRUMB_NO_OPEN") === "1")
+      return
+    Quickshell.execDetached(argv)
   }
 
   function clearDraftState() {
@@ -736,7 +748,7 @@ Panel {
       return
     }
     if (action === "validate-link" && body.open_argv && body.open_argv.length)
-      Quickshell.execDetached(body.open_argv)
+      root.launchOpenArgv(body.open_argv)
   }
 
   onOpenedChanged: if (opened) refresh()
@@ -778,17 +790,19 @@ Panel {
 
   KeyboardPanel {
     id: panel
+    objectName: "breadcrumbPanel"
     anchorItem: button
     owner: root
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(root.expanded ? 720 : 380))
+    contentWidth: panel.fittedContentWidth(root.contentWidthHint > 0 ? root.contentWidthHint : Style.space(root.expanded ? 720 : 380))
     contentHeight: panel.fittedContentHeight(column.implicitHeight)
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      blocked: contextArea.activeFocus
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
@@ -811,13 +825,16 @@ Panel {
             textFormat: Text.PlainText
           }
           Button {
+            id: expandButton
+            objectName: "expandButton"
             text: root.expanded ? "Collapse" : "Expand"
             foreground: root.fg
             fontFamily: root.fontFamily
             fontSize: Style.font.bodySmall
             bordered: true
-            enabled: !root.busy
-            onClicked: root.toggleView()
+            focusable: true
+            opacity: (!root.busy) ? 1 : 0.45
+            onClicked: { if (!root.busy) root.toggleView() }
           }
         }
 
@@ -827,7 +844,7 @@ Panel {
           spacing: Style.space(6)
           Text {
             width: parent.width
-            text: "A newer checkpoint was saved. Your draft is still here."
+            text: "Stale-report: A newer checkpoint was saved after this draft. Your draft is still here. Compact still shows the published checkpoint."
             color: root.fg
             wrapMode: Text.WordWrap
             font.family: root.fontFamily
@@ -848,30 +865,33 @@ Panel {
             spacing: Style.space(6)
             Button {
               text: "Save draft as checkpoint"
-              enabled: !root.busy
+              focusable: (!root.busy)
+              opacity: (!root.busy) ? 1 : 0.45
               foreground: root.fg
               fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
               bordered: true
-              onClicked: root.resolveConflictSave()
+              onClicked: { if (!root.busy) root.resolveConflictSave() }
             }
             Button {
               text: "Load published"
-              enabled: !root.busy
+              focusable: (!root.busy)
+              opacity: (!root.busy) ? 1 : 0.45
               foreground: root.fg
               fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
               bordered: true
-              onClicked: root.resolveConflictLoadPublished()
+              onClicked: { if (!root.busy) root.resolveConflictLoadPublished() }
             }
             Button {
               text: "Keep editing"
-              enabled: !root.busy
+              focusable: (!root.busy)
+              opacity: (!root.busy) ? 1 : 0.45
               foreground: root.fg
               fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
               bordered: true
-              onClicked: root.resolveConflictKeepEditing()
+              onClicked: { if (!root.busy) root.resolveConflictKeepEditing() }
             }
           }
         }
@@ -889,6 +909,7 @@ Panel {
         }
 
         Text {
+          objectName: "errorText"
           width: parent.width
           visible: root.lastError !== ""
           text: root.lastError
@@ -911,12 +932,13 @@ Panel {
         Button {
           visible: root.lastError !== ""
           text: "Reload"
-          enabled: !root.busy
+          focusable: (!root.busy)
+          opacity: (!root.busy) ? 1 : 0.45
           foreground: root.fg
           fontFamily: root.fontFamily
           fontSize: Style.font.bodySmall
           bordered: true
-          onClicked: root.refresh()
+          onClicked: { if (!root.busy) root.refresh() }
         }
 
         Column {
@@ -941,15 +963,18 @@ Panel {
           }
           Button {
             text: root.busy ? "Creating…" : "Create activity"
-            enabled: !root.busy && root.editName.trim().length > 0
+            focusable: (!root.busy && root.editName.trim().length > 0)
+            opacity: (!root.busy && root.editName.trim().length > 0) ? 1 : 0.45
             foreground: root.fg
             fontFamily: root.fontFamily
             bordered: true
-            onClicked: root.createActivity()
+            onClicked: { if (!root.busy && root.editName.trim().length > 0) root.createActivity() }
           }
         }
 
         Column {
+          id: compactColumn
+          objectName: "compactColumn"
           width: parent.width
           spacing: Style.space(8)
           visible: root.hasActivity && !root.expanded
@@ -981,8 +1006,7 @@ Panel {
           Text {
             visible: !!(root.activity && root.activity.archived_at)
             text: "Archived"
-            color: root.fg
-            opacity: 0.7
+            color: root.muted
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
             textFormat: Text.PlainText
@@ -990,8 +1014,7 @@ Panel {
           Text {
             visible: root.hasCurrent
             text: Model.stateLabel(root.current ? root.current.state : "")
-            color: root.fg
-            opacity: 0.8
+            color: root.muted
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
             textFormat: Text.PlainText
@@ -1007,19 +1030,24 @@ Panel {
             textFormat: Text.PlainText
           }
           Text {
+            id: compactSummary
+            objectName: "compactSummary"
             width: parent.width
             visible: root.hasCurrent
             text: root.current ? (root.current.summary || "") : ""
             color: root.fg
             wrapMode: Text.WordWrap
+            maximumLineCount: 2
+            elide: Text.ElideRight
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
             textFormat: Text.PlainText
           }
           Text {
+            objectName: "draftIndicator"
             width: parent.width
             visible: root.hasDraft
-            text: "Unsaved draft"
+            text: "Unsaved draft — expand to continue editing. Compact still shows the last published checkpoint."
             color: root.fg
             wrapMode: Text.WordWrap
             font.family: root.fontFamily
@@ -1033,17 +1061,20 @@ Panel {
             spacing: Style.space(4)
             Text {
               text: "Next step"
-              color: root.fg
-              opacity: 0.7
+              color: root.muted
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
               textFormat: Text.PlainText
             }
             Text {
+              id: compactNext
+              objectName: "compactNext"
               width: parent.width
               text: root.current && root.current.next_step ? root.current.next_step : "No next step"
               color: root.fg
               wrapMode: Text.WordWrap
+              maximumLineCount: 2
+              elide: Text.ElideRight
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
               font.bold: true
@@ -1051,11 +1082,11 @@ Panel {
             }
           }
           Text {
+            objectName: "compactMeta"
             width: parent.width
             visible: root.hasCurrent
-            text: (root.current ? root.current.saved_at : "") + " · " + (root.current ? root.current.author : "")
-            color: root.fg
-            opacity: 0.7
+            text: "Last saved " + Model.formatSavedAt(root.current ? root.current.saved_at : "") + " · reported by " + Model.reportedAuthor(root.current ? root.current.author : "")
+            color: root.muted
             wrapMode: Text.WordWrap
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
@@ -1063,14 +1094,18 @@ Panel {
           }
         }
 
-        Row {
+        Grid {
+          id: expandedGrid
           width: parent.width
-          spacing: Style.space(12)
+          columns: root.narrow ? 1 : 2
+          columnSpacing: Style.space(12)
+          rowSpacing: Style.space(12)
           visible: root.hasActivity && root.expanded
 
           Column {
             id: activitySidebar
-            width: Style.space(200)
+            objectName: "activitySidebar"
+            width: root.narrow ? expandedGrid.width : Style.space(200)
             spacing: Style.space(6)
 
             Text {
@@ -1085,25 +1120,42 @@ Panel {
               width: parent.width
               visible: (root.activities || []).length === 0
               text: root.showArchived ? "No archived activities." : "No activities yet."
-              color: root.fg
-              opacity: 0.7
+              color: root.muted
               wrapMode: Text.WordWrap
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
               textFormat: Text.PlainText
             }
-            Repeater {
-              model: root.activities
-              delegate: Button {
-                required property var modelData
-                width: activitySidebar.width
-                text: root.activityLabel(modelData)
-                foreground: root.fg
-                fontFamily: root.fontFamily
-                fontSize: Style.font.bodySmall
-                bordered: true
-                enabled: !root.busy
-                onClicked: root.switchActivity(modelData.id)
+            Flickable {
+              id: activityScroller
+              objectName: "activityScroller"
+              width: parent.width
+              height: Math.min(activityList.implicitHeight, Style.space(220))
+              clip: true
+              contentWidth: width
+              contentHeight: activityList.implicitHeight
+              boundsBehavior: Flickable.StopAtBounds
+              Column {
+                id: activityList
+                width: activityScroller.width
+                spacing: Style.space(4)
+                Repeater {
+                  model: root.activities
+                  delegate: Button {
+                    required property var modelData
+                    width: activityList.width
+                    clip: true
+                    text: root.activityLabel(modelData)
+                    foreground: root.fg
+                    fontFamily: root.fontFamily
+                    fontSize: Style.font.bodySmall
+                    bordered: true
+                    selected: !!(root.activity && root.activity.id === modelData.id)
+                    focusable: (!root.busy)
+                    opacity: (!root.busy) ? 1 : 0.45
+                    onClicked: { if (!root.busy) root.switchActivity(modelData.id) }
+                  }
+                }
               }
             }
             TextField {
@@ -1114,12 +1166,13 @@ Panel {
             }
             Button {
               text: "Create activity"
-              enabled: !root.busy && root.createName.trim().length > 0
+              focusable: (!root.busy && root.createName.trim().length > 0)
+              opacity: (!root.busy && root.createName.trim().length > 0) ? 1 : 0.45
               foreground: root.fg
               fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
               bordered: true
-              onClicked: root.createActivity()
+              onClicked: { if (!root.busy && root.createName.trim().length > 0) root.createActivity() }
             }
             Text {
               text: "Rename"
@@ -1136,35 +1189,39 @@ Panel {
             }
             Button {
               text: "Rename activity"
-              enabled: !root.busy && root.renameName.trim().length > 0
+              focusable: (!root.busy && root.renameName.trim().length > 0)
+              opacity: (!root.busy && root.renameName.trim().length > 0) ? 1 : 0.45
               foreground: root.fg
               fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
               bordered: true
-              onClicked: root.renameActivity()
+              onClicked: { if (!root.busy && root.renameName.trim().length > 0) root.renameActivity() }
             }
             Button {
               text: "Archive activity"
-              enabled: !root.busy && root.hasActivity
+              focusable: (!root.busy && root.hasActivity)
+              opacity: (!root.busy && root.hasActivity) ? 1 : 0.45
               foreground: root.fg
               fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
               bordered: true
-              onClicked: root.archiveActivity(root.activity.id)
+              onClicked: { if (!root.busy && root.hasActivity) root.archiveActivity(root.activity.id) }
             }
             Button {
               text: root.showArchived ? "Hide archived" : "Show archived"
-              enabled: !root.busy
+              focusable: (!root.busy)
+              opacity: (!root.busy) ? 1 : 0.45
               foreground: root.fg
               fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
               bordered: true
-              onClicked: root.toggleArchived()
+              onClicked: { if (!root.busy) root.toggleArchived() }
             }
           }
 
           Column {
-            width: column.width - Style.space(212)
+            objectName: "expandedEditor"
+            width: root.narrow ? expandedGrid.width : Math.max(1, expandedGrid.width - Style.space(212))
             spacing: Style.space(8)
 
             Text {
@@ -1179,8 +1236,7 @@ Panel {
             }
             Text {
               text: "Stable ID " + (root.activity ? root.activity.id : "")
-              color: root.fg
-              opacity: 0.6
+              color: root.muted
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
               wrapMode: Text.WrapAnywhere
@@ -1204,6 +1260,7 @@ Panel {
               textFormat: Text.PlainText
             }
             TextField {
+              objectName: "expandedSummary"
               width: parent.width
               text: root.editSummary
               foreground: root.fg
@@ -1247,6 +1304,15 @@ Panel {
             Text {
               text: "Reported author"
               color: root.fg
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              textFormat: Text.PlainText
+            }
+            Text {
+              width: parent.width
+              text: "Attribution for this report, not a verified identity."
+              color: root.muted
+              wrapMode: Text.WordWrap
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
               textFormat: Text.PlainText
@@ -1304,33 +1370,36 @@ Panel {
                   spacing: Style.space(6)
                   Button {
                     text: "Open"
-                    enabled: !root.busy && target.length > 0
+                    focusable: (!root.busy && target.length > 0)
+                    opacity: (!root.busy && target.length > 0) ? 1 : 0.45
                     foreground: root.fg
                     fontFamily: root.fontFamily
                     fontSize: Style.font.bodySmall
                     bordered: true
-                    onClicked: root.openValidatedLink(kind, target)
+                    onClicked: { if (!root.busy && target.length > 0) root.openValidatedLink(kind, target) }
                   }
                   Button {
                     text: "Remove"
-                    enabled: !root.busy
+                    focusable: (!root.busy)
+                    opacity: (!root.busy) ? 1 : 0.45
                     foreground: root.fg
                     fontFamily: root.fontFamily
                     fontSize: Style.font.bodySmall
                     bordered: true
-                    onClicked: { linkModel.remove(index); root.markUserEdit() }
+                    onClicked: { if (!root.busy) { linkModel.remove(index); root.markUserEdit() } }
                   }
                 }
               }
             }
             Button {
               text: "Add link"
-              enabled: !root.busy && linkModel.count < 20
+              focusable: (!root.busy && linkModel.count < 20)
+              opacity: (!root.busy && linkModel.count < 20) ? 1 : 0.45
               foreground: root.fg
               fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
               bordered: true
-              onClicked: { linkModel.append({ label: "", kind: "web", target: "" }); root.markUserEdit() }
+              onClicked: { if (!root.busy && linkModel.count < 20) { linkModel.append({ label: "", kind: "web", target: "" }); root.markUserEdit() } }
             }
             Text {
               width: parent.width
@@ -1345,28 +1414,29 @@ Panel {
             }
             Button {
               text: root.busy ? "Saving…" : "Save checkpoint"
-              enabled: !root.busy
+              focusable: (!root.busy)
+              opacity: (!root.busy) ? 1 : 0.45
               foreground: root.fg
               fontFamily: root.fontFamily
               bordered: true
-              onClicked: root.saveCheckpoint()
+              onClicked: { if (!root.busy) root.saveCheckpoint() }
             }
             Button {
               text: "Discard draft"
               visible: root.hasDraft
-              enabled: !root.busy
+              focusable: (!root.busy)
+              opacity: (!root.busy) ? 1 : 0.45
               foreground: root.fg
               fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
               bordered: true
-              onClicked: root.discardDraft()
+              onClicked: { if (!root.busy) root.discardDraft() }
             }
             Text {
               width: parent.width
               visible: root.hasCurrent
-              text: "Last saved " + (root.current ? root.current.saved_at : "") + " · revision " + root.revision
-              color: root.fg
-              opacity: 0.7
+              text: "Last saved " + Model.formatSavedAt(root.current ? root.current.saved_at : "") + " · revision " + root.revision
+              color: root.muted
               wrapMode: Text.WordWrap
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -1420,33 +1490,34 @@ Panel {
                 }
                 Button {
                   text: "Restore"
-                  enabled: !root.busy && !!modelData.id
+                  focusable: (!root.busy && !!modelData.id)
+                  opacity: (!root.busy && !!modelData.id) ? 1 : 0.45
                   foreground: root.fg
                   fontFamily: root.fontFamily
                   fontSize: Style.font.bodySmall
                   bordered: true
-                  onClicked: root.restoreCheckpoint(modelData.id)
+                  onClicked: { if (!root.busy && !!modelData.id) root.restoreCheckpoint(modelData.id) }
                 }
               }
             }
             Button {
               visible: root.historyHasMore
               text: "Older"
-              enabled: !root.busy
+              focusable: (!root.busy)
+              opacity: (!root.busy) ? 1 : 0.45
               foreground: root.fg
               fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
               bordered: true
-              onClicked: root.loadMoreHistory()
+              onClicked: { if (!root.busy) root.loadMoreHistory() }
             }
           }
         }
 
         Text {
           width: parent.width
-          text: "Local checkpoints · last saved report, not live status"
-          color: root.fg
-          opacity: 0.55
+          text: "Local checkpoints · last saved report, not live status. Reported author is attribution, not authentication."
+          color: root.muted
           wrapMode: Text.WordWrap
           font.family: root.fontFamily
           font.pixelSize: Style.font.bodySmall

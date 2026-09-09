@@ -1,10 +1,9 @@
 import QtQuick
 
-// Minimal facade of /usr/share/omarchy/shell/Ui/Dropdown.qml
-// Installed ListView.selectCurrent assigns root.value THEN emits changed(v),
-// which breaks a QML property binding on value. Native tests must mutate
-// through this same assignment-before-signal path, not only Panel.switchActivity
-// and not a dumb Item stub without selectCurrent.
+// Facade aligned with installed /usr/share/omarchy/shell/Ui/Dropdown.qml.
+// Real ListView.selectCurrent() takes no argument: it assigns root.value
+// from currentIndex THEN emits changed(v). Isolated Cave overlays the
+// packaged file. Tests must not call selectCurrent(value).
 Item {
   id: root
   property string label: ""
@@ -17,8 +16,14 @@ Item {
   implicitWidth: 160
   implicitHeight: 32
 
-  function selectCurrent(v) {
-    var selected = v !== undefined ? String(v) : String(root.value)
+  function optionValue(opt) {
+    if (opt && opt.value !== undefined)
+      return String(opt.value)
+    return String(opt)
+  }
+
+  function selectCurrent() {
+    var selected = String(root.value)
     root.value = selected
     root.changed(selected)
   }

@@ -39,6 +39,7 @@ ERROR_CODES = {
     "permission": 5,
     "io": 6,
     "schema": 7,
+    "not_found": 8,
 }
 
 
@@ -1216,6 +1217,13 @@ def cmd_validate_link(payload: dict) -> None:
         target = validate_web_target(target)
     else:
         target = validate_path_target(target)
+        path = Path(target)
+        if not path.exists():
+            fail("not_found", "That file or folder is missing.")
+        if kind == "file" and path.is_dir():
+            fail("validation", "That path is a folder, not a file.")
+        if kind == "folder" and not path.is_dir():
+            fail("validation", "That path is not a folder.")
     ok({"kind": kind, "target": target, "open_argv": ["xdg-open", "--", target]})
 
 

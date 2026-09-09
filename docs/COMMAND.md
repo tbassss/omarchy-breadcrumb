@@ -238,5 +238,5 @@ are not that gate and must not be described as a live installed SSH workflow.
 
 ## Out of scope
 
-Glance polish and the known full-host `qs.Ui.Button.enabled` gap are issue #7.
+Glance polish and the plugin-side `qs.Ui.Button.enabled` mismatch are issue #7.
 Live install, restart, merge, and release remain unapproved.

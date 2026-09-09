@@ -49,3 +49,19 @@ function fileFromUrl(url) {
 function defaultAuthor() {
   return "You"
 }
+
+function formatSavedAt(savedAt) {
+  var raw = String(savedAt || "")
+  if (!raw)
+    return ""
+  if (raw.length >= 16 && raw.charAt(10) === "T")
+    return raw.slice(0, 10) + " " + raw.slice(11, 16) + " UTC"
+  return raw
+}
+
+function reportedAuthor(author) {
+  var name = String(author || "").trim()
+  if (!name)
+    return "unspecified"
+  return name
+}

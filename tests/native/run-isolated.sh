@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Isolated Cave native validation for Breadcrumb issues #3, #4, #5, and #6.
+# Isolated Cave native validation for Breadcrumb issues #3–#7.
 # Does NOT install/enable the plugin, restart the live shell, or write live config.
+# Packaged qs.Ui/qs.Commons are overlaid from $OMARCHY_PATH/shell. KeyboardPanel
+# and host Panel stay stubbed so this does not attach to the compositor.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -59,6 +61,35 @@ chmod 700 "$WORKDIR/runtime" "$WORKDIR/breadcrumb-data"
 tar -xf "$ARCHIVE" -C "$WORKDIR/plugin"
 cp -a "$HARNESS_SRC/." "$WORKDIR/harness/"
 
+OMARCHY_PATH="${OMARCHY_PATH:-/usr/share/omarchy}"
+OMARCHY_SHELL="${OMARCHY_SHELL:-$OMARCHY_PATH/shell}"
+mkdir -p "$EVIDENCE_DIR/screenshots" "$EVIDENCE_DIR/logs"
+{
+  echo "omarchy_path=$OMARCHY_PATH"
+  (pacman -Q omarchy 2>/dev/null || true)
+  (/usr/bin/qs --version 2>/dev/null || true)
+  echo "python=$(/usr/bin/python3 --version 2>/dev/null || true)"
+} | tee "$EVIDENCE_DIR/logs/installed-versions.txt"
+
+if [[ -d "$OMARCHY_SHELL/Commons" && -d "$OMARCHY_SHELL/Ui" ]]; then
+  echo "overlaying packaged qs.Commons and qs.Ui from $OMARCHY_SHELL"
+  cp -a "$OMARCHY_SHELL/Commons/." "$WORKDIR/harness/qs/Commons/"
+  cp -a "$OMARCHY_SHELL/Ui/." "$WORKDIR/harness/qs/Ui/"
+  # Keep isolated stubs that would otherwise attach to the live compositor / IPC.
+  cp -a "$HARNESS_SRC/qs/Ui/KeyboardPanel.qml" "$WORKDIR/harness/qs/Ui/KeyboardPanel.qml"
+  cp -a "$HARNESS_SRC/qs/Ui/Panel.qml" "$WORKDIR/harness/qs/Ui/Panel.qml"
+  {
+    echo "packaged_overlay=yes"
+    echo "omarchy_shell=$OMARCHY_SHELL"
+    echo "stubbed=KeyboardPanel,Panel"
+    echo "packaged=Button,Dropdown,TextField,BarIconButton,PanelKeyCatcher,Color,Style,Border,Util,and remaining qs.Ui types"
+    echo "button_declares_enabled=$(grep -c 'property bool enabled' "$WORKDIR/harness/qs/Ui/Button.qml" || true)"
+    echo "dropdown_selectCurrent=$(grep -n 'function selectCurrent' "$WORKDIR/harness/qs/Ui/Dropdown.qml" || true)"
+  } | tee "$EVIDENCE_DIR/logs/control-overlay.txt"
+else
+  echo "WARNING: packaged Omarchy modules missing; using repo facades" | tee "$EVIDENCE_DIR/logs/control-overlay.txt"
+fi
+
 # Isolated copy used only for omarchy plugin validate (not live HOME).
 mkdir -p "$WORKDIR/home/.config/omarchy/plugins"
 cp -a "$WORKDIR/plugin/." "$WORKDIR/home/.config/omarchy/plugins/tbassss.breadcrumb"
@@ -110,9 +141,11 @@ env -i \
   BREADCRUMB_DATA_DIR="$WORKDIR/breadcrumb-data" \
   BREADCRUMB_PLUGIN_DIR="$WORKDIR/plugin" \
   BREADCRUMB_RESULTS="$RESULTS" \
+  BREADCRUMB_EVIDENCE="$EVIDENCE_DIR" \
+  BREADCRUMB_NO_OPEN=1 \
   OMARCHY_PATH=/usr/share/omarchy \
   PYTHONDONTWRITEBYTECODE=1 \
-  timeout 120 /usr/bin/qs -p "$WORKDIR/harness/shell.qml" --no-color -v \
+  timeout 180 /usr/bin/qs -p "$WORKDIR/harness/shell.qml" --no-color -v \
   >"$QS_STDOUT" 2>"$QS_STDERR"
 QS_RC=$?
 set -e
