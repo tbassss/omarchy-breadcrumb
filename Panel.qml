@@ -21,7 +21,7 @@ Panel {
   property string view: "compact"
   property string pendingAction: ""
   property var pendingOpen: null
-  property bool dirty: false
+  property bool dirty: false // genuine user edits (onTextEdited); construction onTextChanged is not a draft
   property string editName: ""
   property string editSummary: ""
   property string editNext: ""
@@ -428,7 +428,8 @@ Panel {
             width: parent.width
             text: root.editSummary
             foreground: root.fg
-            onTextChanged: { root.editSummary = text; root.dirty = true }
+            onTextChanged: root.editSummary = text
+            onTextEdited: root.dirty = true
           }
           Text {
             text: root.editState === "done" ? "Next step (optional)" : "Next step"
@@ -441,7 +442,8 @@ Panel {
             width: parent.width
             text: root.editNext
             foreground: root.fg
-            onTextChanged: { root.editNext = text; root.dirty = true }
+            onTextChanged: root.editNext = text
+            onTextEdited: root.dirty = true
           }
           Text {
             text: "Context"
@@ -460,7 +462,8 @@ Panel {
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
             placeholderText: "Optional longer notes"
-            onTextChanged: { root.editContext = text; root.dirty = true }
+            onTextChanged: root.editContext = text
+            onTextEdited: root.dirty = true
           }
           Text {
             text: "Reported author"
@@ -473,7 +476,8 @@ Panel {
             width: parent.width
             text: root.editAuthor
             foreground: root.fg
-            onTextChanged: { root.editAuthor = text; root.dirty = true }
+            onTextChanged: root.editAuthor = text
+            onTextEdited: root.dirty = true
           }
           Text {
             text: "Links"
@@ -495,7 +499,8 @@ Panel {
                 width: parent.width
                 text: label
                 foreground: root.fg
-                onTextChanged: { linkModel.setProperty(index, "label", text); root.dirty = true }
+                onTextChanged: linkModel.setProperty(index, "label", text)
+                onTextEdited: root.dirty = true
               }
               Row {
                 spacing: Style.space(6)
@@ -512,7 +517,8 @@ Panel {
                   width: column.width - Style.space(180)
                   text: target
                   foreground: root.fg
-                  onTextChanged: { linkModel.setProperty(index, "target", text); root.dirty = true }
+                  onTextChanged: linkModel.setProperty(index, "target", text)
+                  onTextEdited: root.dirty = true
                 }
               }
               Row {

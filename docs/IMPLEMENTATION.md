@@ -25,23 +25,63 @@ First persistent manual checkpoint. Not a release, not installed, not an agent C
 
 Activity switching/rename/archive, history browser, disk draft recovery, public agent CLI, glance polish, live install/release.
 
-## Native save/reopen evidence (not run)
+## Native save/reopen evidence (component test, 2026-09-09)
 
-Python tests and QML source contracts are not native Omarchy evidence. Isolated native harness, requiring coordinator approval:
+Python tests and QML source contracts are not native Omarchy evidence. Isolated qs
+offscreen harness lives at `tests/native/` and must run on the-cave only.
+
+Classification: **component test** — real `Panel.qml` + `/usr/bin/qs` 0.3.1 + Qt
+6.11.2 offscreen. Host `qs.Ui` / `qs.Commons` are a minimal facade of inspected
+Cave APIs. `KeyboardPanel` is stubbed to avoid WlrLayershell. Not full
+omarchy-shell host integration, not a live bar, not a live install.
+
+### Qt control APIs inspected (read-only on the-cave)
+
+- `/usr/share/omarchy/shell/Ui/TextField.qml` inherits Qt Quick Controls
+  `TextField` (`QQuickTextField` : `QQuickTextInput`). `textEdited` is inherited
+  from `QQuickTextInput` and does **not** fire for programmatic `text` changes.
+- QtQuick.Controls `TextArea` is `QQuickTextArea` : `QQuickTextEdit`.
+  `textEdited` exists on this Cave Qt 6.11.2 (`Q_REVISION(6, 9)`).
+- Omarchy `Dropdown.qml` emits `changed` only on user option select, not on
+  construction.
+
+Rejected candidate `6924a94` marked `dirty` from `onTextChanged` during
+TextField/TextArea construction, so the first `get` skipped editor hydration.
+Repair uses `onTextEdited` for dirty. `get` still does **not** clear dirty
+(would clobber a genuine in-progress edit on refresh).
+
+### Isolated re-run
 
 ```bash
-# On the-cave, disposable HOME only. Do not write ~/.config/omarchy of the live user.
-HARNESS=$(mktemp -d /tmp/breadcrumb-native-XXXX)
-export HOME="$HARNESS/home"
-export BREADCRUMB_DATA_DIR="$HARNESS/data"
-mkdir -p "$HOME/.config/omarchy/plugins"
-# Copy this repo (or plugin files) to:
-#   $HOME/.config/omarchy/plugins/tbassss.breadcrumb
-omarchy plugin validate "$HOME/.config/omarchy/plugins/tbassss.breadcrumb"
-# Then a nested omarchy-shell/qs session that loads only this bar-widget,
-# with no live plugin enable, no shell.json mutation of the real user,
-# no service restart. Precise host command depends on how omarchy-shell
-# discovers plugins from $HOME; confirm before running.
+# On the-cave. Disposable HOME/XDG only. Do not write ~/.config/omarchy of the live user.
+ARCHIVE=/path/to/plugin.tar \
+EVIDENCE_DIR=/tmp/breadcrumb-evidence \
+HARNESS_SRC=/path/to/checkout/tests/native/harness \
+  /path/to/checkout/tests/native/run-isolated.sh
 ```
 
-Do not treat this document as permission to install or restart anything.
+Holds: `QT_QPA_PLATFORM=offscreen`, unique `XDG_RUNTIME_DIR`, no Wayland/DISPLAY,
+no live plugin enable, no shell.json mutation, no service restart.
+
+### Results (repair working tree vs rejected `6924a94`)
+
+| Check | Rejected `6924a94` | Repair |
+|---|---|---|
+| `omarchy plugin validate` | PASS rc=0 | PASS rc=0 |
+| UI create + save + close/open | PASS | PASS |
+| Same-instance in-memory draft refresh | PASS | PASS |
+| Loader recreate `current.*` | PASS | PASS |
+| Loader recreate editor (`editSummary===current.summary`, `dirty===false`) | **FAIL** empty editor, `dirty=true` | **PASS** |
+| QML runtime errors | none | none |
+| Live `shell.json` hash | unchanged `469bfd9b…` | unchanged `469bfd9b…` |
+| Live plugin dir `tbassss.breadcrumb` | absent | absent |
+
+Fictional checkpoint only. Native assertion is `tests/native/harness/shell.qml`,
+not a source-only substitute.
+
+### Not claimed
+
+- Full host integration (live bar, real `KeyboardPanel` layer-shell, `IpcHandler`)
+- Issue #4–#8 (history, disk drafts, agent CLI, glance polish, live install)
+- Disk draft recovery after Panel recreate (issue #5). Recreate hydrates from
+  the saved checkpoint; in-memory drafts are same-instance only.

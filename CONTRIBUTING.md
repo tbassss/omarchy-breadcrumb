@@ -15,7 +15,7 @@ Use fictional checkpoints and screenshots. Do not commit credentials, real user 
 
 ## Current verification
 
-The first implementation slice (issue #3) adds a native plugin layout and a Python 3 stdlib SQLite store. Run `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v`, `python3 -m py_compile bin/breadcrumb-store tests/*.py`, Markdown link checks, issue-template frontmatter, and `git diff --check`. Store tests cover persistence, CAS, faults, permissions, and safe links. Plugin tests are source contracts, not Omarchy runtime evidence. Native Compact/Expanded save/reopen still requires an approved isolated harness (`docs/IMPLEMENTATION.md`). Do not treat passing Python tests as live desktop acceptance.
+The first implementation slice (issue #3) adds a native plugin layout and a Python 3 stdlib SQLite store. Run `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v`, `python3 -m py_compile bin/breadcrumb-store tests/*.py`, Markdown link checks, issue-template frontmatter, and `git diff --check`. Store tests cover persistence, CAS, faults, permissions, and safe links. Plugin tests are source contracts, not Omarchy runtime evidence. Isolated native Compact/Expanded save/reopen/Panel-recreate is `tests/native/` on the-cave (component test, not live desktop acceptance). See `docs/IMPLEMENTATION.md`.
 
 ## Release boundary
 

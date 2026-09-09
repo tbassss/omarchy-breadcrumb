@@ -28,7 +28,7 @@ python3 -m py_compile bin/breadcrumb-store tests/*.py
 git diff --check
 ```
 
-Native Omarchy save/reopen still needs an approved isolated harness; see `docs/IMPLEMENTATION.md`.
+Native Omarchy save/reopen/Panel-recreate is an isolated component test on the-cave (`tests/native/`). Passing Python tests is not live desktop acceptance. See `docs/IMPLEMENTATION.md`.
 
 ## Privacy and release
 

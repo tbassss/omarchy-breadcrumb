@@ -69,6 +69,38 @@ class TestPluginContract(unittest.TestCase):
         self.assertIn("PRAGMA synchronous = FULL", store)
         self.assertIn("expected_revision", store)
 
+    def test_editor_dirty_tracks_user_edits_not_construction_text_changed(self) -> None:
+        """Source contract only. Native recreate evidence is tests/native/."""
+        qml = PANEL.read_text(encoding="utf-8")
+        self.assertNotRegex(
+            qml,
+            r"onTextChanged:\s*\{[^}]*root\.dirty\s*=\s*true",
+            "onTextChanged during TextField/TextArea construction must not mark a user draft",
+        )
+        self.assertGreaterEqual(qml.count("onTextEdited:"), 4)
+        self.assertIn("onTextEdited: root.dirty = true", qml)
+        self.assertNotRegex(
+            qml,
+            r'pendingAction === "get"\)\s*\n\s*root\.dirty = false',
+        )
+        self.assertNotIn('if (root.pendingAction === "get")\n        root.dirty = false', qml)
+        get_clears = 'if (root.pendingAction === "get")\n      root.dirty = false'
+        self.assertNotIn(get_clears, qml)
+
+    def test_native_harness_asserts_recreate_editor_and_draft_preserve(self) -> None:
+        """The native qs assertion must exist in-repo. This is not a substitute for running it."""
+        harness = ROOT / "tests" / "native" / "harness" / "shell.qml"
+        runner = ROOT / "tests" / "native" / "run-isolated.sh"
+        self.assertTrue(harness.is_file())
+        self.assertTrue(runner.is_file())
+        qml = harness.read_text(encoding="utf-8")
+        self.assertIn("editor readback summary mismatch", qml)
+        self.assertIn("editSummary !== expectedSummary", qml)
+        self.assertIn("fresh Panel marked dirty before any user edit", qml)
+        self.assertIn("refresh clobbered genuine in-progress summary draft", qml)
+        self.assertIn("panelLoader.active = false", qml)
+        self.assertIn("Unsaved lantern draft", qml)
+
 
 if __name__ == "__main__":
     unittest.main()
