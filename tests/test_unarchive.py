@@ -7,13 +7,17 @@ Not permanent delete. Does not recreate a deleted activity.
 
 from __future__ import annotations
 
+import json
+import os
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 from test_delete_archived import counts
-from test_store import decode, run_store
+from test_store import STORE, decode, run_store
 
 
 class TestUnarchiveActivity(unittest.TestCase):
@@ -74,8 +78,29 @@ class TestUnarchiveActivity(unittest.TestCase):
             "expected_revision": int(got["revision"]),
             "expected_draft_revision": int(got.get("draft_generation") or 0),
             "expected_archived_at": activity["archived_at"],
+            "expected_archive_generation": int(activity.get("archive_generation") or 0),
             "expected_name": activity["name"],
         }
+
+    def _force_archived_at(self, activity_id: str, archived_at: str) -> None:
+        conn = sqlite3.connect(self.data_dir / "breadcrumb.sqlite")
+        try:
+            conn.execute("UPDATE activities SET archived_at = ? WHERE id = ?", (archived_at, activity_id))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _start(self, command: str, payload: dict) -> subprocess.Popen[str]:
+        env = os.environ.copy()
+        env["BREADCRUMB_DATA_DIR"] = str(self.data_dir)
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        return subprocess.Popen(
+            [sys.executable, str(STORE), command, json.dumps(payload)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
 
     def test_unarchive_returns_exact_activity_without_new_checkpoint(self) -> None:
         keep = self._create("Keep Lantern Notes")
@@ -224,6 +249,172 @@ class TestUnarchiveActivity(unittest.TestCase):
         self.assertIsNotNone(still["activity"]["archived_at"])
         self.assertEqual(still["current"]["summary"], "Gone published trail notes")
         self.assertEqual(counts(self.data_dir, gone["id"])["checkpoints"], before_gone["checkpoints"])
+
+    def test_same_second_unarchive_rearchive_rejects_old_delete_bytes(self) -> None:
+        gone = self._create("Gone Trail Map")
+        self._publish(gone["id"], 0, "Gone published trail notes")
+        self._draft(gone["id"], 0, "Keep this draft", base=1)
+        archived = self._archive(gone["id"])
+        frozen = self._frozen(gone["id"])
+        first_at = archived["archived_at"]
+        before = counts(self.data_dir, gone["id"])
+
+        unarchived = decode(run_store(self.data_dir, "unarchive-activity", {"activity_id": gone["id"]}))
+        self.assertTrue(unarchived.get("ok"), unarchived)
+        rearchived = self._archive(gone["id"])
+        self.assertIsNotNone(rearchived["archived_at"])
+        self._force_archived_at(gone["id"], first_at)
+        after_cycle = decode(run_store(self.data_dir, "get", {"activity_id": gone["id"], "include_archived": True}))
+        self.assertEqual(after_cycle["activity"]["archived_at"], first_at)
+        self.assertEqual(after_cycle["activity"]["archived_at"], frozen["expected_archived_at"])
+
+        proc = run_store(self.data_dir, "delete-archived-activity", frozen)
+        self.assertNotEqual(proc.returncode, 0, proc.stdout)
+        err = decode(proc)
+        self.assertEqual(err["error"], "stale_revision")
+        self.assertIn("current_archive_generation", err)
+        self.assertNotEqual(err["current_archive_generation"], frozen["expected_archive_generation"])
+        self.assertEqual(counts(self.data_dir, gone["id"]), before)
+        still = decode(run_store(self.data_dir, "get", {"activity_id": gone["id"], "include_archived": True}))
+        self.assertEqual(still["current"]["summary"], "Gone published trail notes")
+        self.assertEqual(still["draft"]["summary"], "Keep this draft")
+        self.assertGreater(int(still["activity"]["archive_generation"]), int(frozen["expected_archive_generation"]))
+
+    def test_wall_clock_rollback_does_not_reuse_delete_consent(self) -> None:
+        gone = self._create("Gone Trail Map")
+        self._publish(gone["id"], 0, "Gone published trail notes")
+        archived = self._archive(gone["id"])
+        frozen = self._frozen(gone["id"])
+        decode(run_store(self.data_dir, "unarchive-activity", {"activity_id": gone["id"]}))
+        self._archive(gone["id"])
+        self._force_archived_at(gone["id"], "2020-01-01T00:00:00Z")
+        proc = run_store(self.data_dir, "delete-archived-activity", frozen)
+        self.assertNotEqual(proc.returncode, 0)
+        err = decode(proc)
+        self.assertEqual(err["error"], "stale_revision")
+        self.assertEqual(counts(self.data_dir, gone["id"])["activities"], 1)
+
+        self._force_archived_at(gone["id"], archived["archived_at"])
+        replay = run_store(self.data_dir, "delete-archived-activity", frozen)
+        self.assertNotEqual(replay.returncode, 0)
+        replay_err = decode(replay)
+        self.assertEqual(replay_err["error"], "stale_revision")
+        self.assertIn("current_archive_generation", replay_err)
+        self.assertNotEqual(replay_err["current_archive_generation"], frozen["expected_archive_generation"])
+        self.assertEqual(counts(self.data_dir, gone["id"])["activities"], 1)
+
+    def test_repeated_same_time_cycles_reject_prior_consents_and_accept_current(self) -> None:
+        gone = self._create("Gone Trail Map")
+        self._publish(gone["id"], 0, "Gone published trail notes")
+        first_at = ""
+        frozen_payloads: list[dict] = []
+        for _ in range(3):
+            archived = self._archive(gone["id"])
+            if not first_at:
+                first_at = archived["archived_at"]
+            else:
+                self._force_archived_at(gone["id"], first_at)
+            frozen_payloads.append(self._frozen(gone["id"]))
+            decode(run_store(self.data_dir, "unarchive-activity", {"activity_id": gone["id"]}))
+        archived = self._archive(gone["id"])
+        self._force_archived_at(gone["id"], first_at)
+        current = self._frozen(gone["id"])
+        for old in frozen_payloads:
+            proc = run_store(self.data_dir, "delete-archived-activity", old)
+            self.assertNotEqual(proc.returncode, 0, old)
+            self.assertEqual(decode(proc)["error"], "stale_revision")
+            self.assertEqual(counts(self.data_dir, gone["id"])["activities"], 1)
+        accepted = decode(run_store(self.data_dir, "delete-archived-activity", current))
+        self.assertTrue(accepted.get("ok"), accepted)
+        self.assertEqual(counts(self.data_dir, gone["id"])["activities"], 0)
+
+    def test_second_instance_confirmation_deletes_after_first_instance_stale(self) -> None:
+        gone = self._create("Gone Trail Map")
+        keep = self._create("Keep Lantern Notes")
+        self._publish(gone["id"], 0, "Gone published trail notes")
+        self._publish(keep["id"], 0, "Keep published lantern count")
+        archived = self._archive(gone["id"])
+        first_at = archived["archived_at"]
+        frozen_a = self._frozen(gone["id"])
+        decode(run_store(self.data_dir, "unarchive-activity", {"activity_id": gone["id"]}))
+        self._archive(gone["id"])
+        self._force_archived_at(gone["id"], first_at)
+        frozen_b = self._frozen(gone["id"])
+        self.assertEqual(frozen_a["expected_archived_at"], frozen_b["expected_archived_at"])
+        self.assertNotEqual(frozen_a["expected_archive_generation"], frozen_b["expected_archive_generation"])
+
+        stale = run_store(self.data_dir, "delete-archived-activity", frozen_a)
+        self.assertNotEqual(stale.returncode, 0)
+        self.assertEqual(decode(stale)["error"], "stale_revision")
+        self.assertEqual(counts(self.data_dir, gone["id"])["activities"], 1)
+
+        accepted = decode(run_store(self.data_dir, "delete-archived-activity", frozen_b))
+        self.assertTrue(accepted.get("ok"), accepted)
+        self.assertEqual(accepted["deleted_activity_id"], gone["id"])
+        self.assertEqual(counts(self.data_dir, gone["id"])["activities"], 0)
+        self.assertEqual(counts(self.data_dir, keep["id"])["activities"], 1)
+
+    def test_concurrent_archive_delete_unarchive_serial_outcomes(self) -> None:
+        gone = self._create("Gone Trail Map")
+        keep = self._create("Keep Lantern Notes")
+        self._publish(gone["id"], 0, "Gone published trail notes")
+        self._draft(gone["id"], 0, "Keep this draft", base=1)
+        self._archive(gone["id"])
+        frozen = self._frozen(gone["id"])
+
+        deleter = self._start("delete-archived-activity", frozen)
+        unarchiver = self._start("unarchive-activity", {"activity_id": gone["id"]})
+        delete_out, delete_err = deleter.communicate(timeout=15)
+        unarchive_out, unarchive_err = unarchiver.communicate(timeout=15)
+        delete_body = json.loads(delete_out) if delete_out.strip() else {"_empty": True, "stderr": delete_err}
+        unarchive_body = json.loads(unarchive_out) if unarchive_out.strip() else {"_empty": True, "stderr": unarchive_err}
+        delete_ok = bool(delete_body.get("ok"))
+        unarchive_ok = bool(unarchive_body.get("ok"))
+        self.assertNotEqual(delete_ok and unarchive_ok, True)
+        remaining = counts(self.data_dir, gone["id"])["activities"]
+        if delete_ok:
+            self.assertEqual(remaining, 0)
+            self.assertEqual(unarchive_body.get("error"), "validation")
+            resurrect = run_store(self.data_dir, "unarchive-activity", {"activity_id": gone["id"]})
+            self.assertNotEqual(resurrect.returncode, 0)
+            self.assertEqual(decode(resurrect)["error"], "validation")
+        else:
+            self.assertEqual(remaining, 1)
+            self.assertTrue(unarchive_ok, unarchive_body)
+            got = decode(run_store(self.data_dir, "get", {"activity_id": gone["id"]}))
+            self.assertIsNone(got["activity"]["archived_at"])
+            self.assertEqual(got["current"]["summary"], "Gone published trail notes")
+            self.assertEqual(got["draft"]["summary"], "Keep this draft")
+            stale = run_store(self.data_dir, "delete-archived-activity", frozen)
+            self.assertNotEqual(stale.returncode, 0)
+            self.assertEqual(decode(stale)["error"], "validation")
+        self.assertEqual(counts(self.data_dir, keep["id"])["activities"], 1)
+
+        active = self._create("Active Lantern")
+        self._publish(active["id"], 0, "Active checkpoint")
+        archiver = self._start("archive-activity", {"activity_id": active["id"]})
+        active_delete = self._start(
+            "delete-archived-activity",
+            {
+                "activity_id": active["id"],
+                "expected_revision": 1,
+                "expected_draft_revision": 0,
+                "expected_archived_at": "2026-01-01T00:00:00Z",
+                "expected_archive_generation": 1,
+                "expected_name": "Active Lantern",
+            },
+        )
+        archive_out, _ = archiver.communicate(timeout=15)
+        active_delete_out, _ = active_delete.communicate(timeout=15)
+        archive_body = json.loads(archive_out)
+        active_delete_body = json.loads(active_delete_out)
+        self.assertTrue(archive_body.get("ok"), archive_body)
+        self.assertFalse(active_delete_body.get("ok"))
+        self.assertIn(active_delete_body["error"], ("validation", "stale_revision"))
+        still_active = decode(run_store(self.data_dir, "get", {"activity_id": active["id"], "include_archived": True}))
+        self.assertIsNotNone(still_active["activity"]["archived_at"])
+        self.assertEqual(still_active["current"]["summary"], "Active checkpoint")
+        self.assertEqual(counts(self.data_dir, active["id"])["activities"], 1)
 
 
 if __name__ == "__main__":

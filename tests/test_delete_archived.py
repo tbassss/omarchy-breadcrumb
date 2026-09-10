@@ -6,6 +6,7 @@ Internal store command only. Fictional fixtures.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -109,6 +110,7 @@ class TestDeleteArchivedActivity(unittest.TestCase):
             "expected_revision": int(got["revision"]),
             "expected_draft_revision": int(got.get("draft_generation") or 0),
             "expected_archived_at": activity["archived_at"],
+            "expected_archive_generation": int(activity.get("archive_generation") or 0),
             "expected_name": activity["name"],
         }
 
@@ -196,6 +198,7 @@ class TestDeleteArchivedActivity(unittest.TestCase):
             "expected_revision": 1,
             "expected_draft_revision": 0,
             "expected_archived_at": "2026-01-01T00:00:00Z",
+            "expected_archive_generation": 0,
             "expected_name": "Study Notes",
         }
         proc = run_store(self.data_dir, "delete-archived-activity", frozen)
@@ -215,6 +218,7 @@ class TestDeleteArchivedActivity(unittest.TestCase):
             "expected_revision": 1,
             "expected_draft_revision": 0,
             "expected_archived_at": archived["archived_at"],
+            "expected_archive_generation": int(archived.get("archive_generation") or 0),
             "expected_name": "Stale Trail",
         }
         self._publish(gone["id"], 1, "Published v2 after confirm")
@@ -246,6 +250,7 @@ class TestDeleteArchivedActivity(unittest.TestCase):
             "expected_revision": 0,
             "expected_draft_revision": 0,
             "expected_archived_at": archived["archived_at"],
+            "expected_archive_generation": int(archived.get("archive_generation") or 0),
             "expected_name": "Rename Me",
         }
         conn = sqlite3.connect(self.data_dir / "breadcrumb.sqlite")
@@ -263,6 +268,7 @@ class TestDeleteArchivedActivity(unittest.TestCase):
             "expected_revision": 0,
             "expected_draft_revision": 0,
             "expected_archived_at": "2020-01-01T00:00:00Z",
+            "expected_archive_generation": int(archived.get("archive_generation") or 0),
             "expected_name": "Rename Me",
         }
         proc = run_store(self.data_dir, "delete-archived-activity", frozen)
@@ -278,6 +284,7 @@ class TestDeleteArchivedActivity(unittest.TestCase):
             "expected_revision": 0,
             "expected_draft_revision": 0,
             "expected_archived_at": archived["archived_at"],
+            "expected_archive_generation": int(archived.get("archive_generation") or 0),
             "expected_name": "Rename Me",
         }
         proc = run_store(self.data_dir, "delete-archived-activity", frozen)
@@ -344,6 +351,7 @@ class TestDeleteArchivedActivity(unittest.TestCase):
                 "expected_revision": 0,
                 "expected_draft_revision": 0,
                 "expected_archived_at": "2026-01-01T00:00:00Z",
+                "expected_archive_generation": 0,
                 "expected_name": "Missing",
             },
         )
@@ -355,6 +363,114 @@ class TestDeleteArchivedActivity(unittest.TestCase):
         self.assertNotEqual(incomplete.returncode, 0)
         self.assertEqual(decode(incomplete)["error"], "validation")
         self.assertEqual(counts(self.data_dir, gone["id"])["activities"], 1)
+        missing_generation = run_store(
+            self.data_dir,
+            "delete-archived-activity",
+            {
+                "activity_id": gone["id"],
+                "expected_revision": 0,
+                "expected_draft_revision": 0,
+                "expected_archived_at": decode(run_store(self.data_dir, "get", {"activity_id": gone["id"], "include_archived": True}))["activity"]["archived_at"],
+                "expected_name": "No CAS",
+            },
+        )
+        self.assertNotEqual(missing_generation.returncode, 0)
+        self.assertEqual(decode(missing_generation)["error"], "validation")
+        self.assertEqual(counts(self.data_dir, gone["id"])["activities"], 1)
+
+    def test_existing_v1_db_gains_archive_generation_without_losing_rows(self) -> None:
+        db = self.data_dir / "breadcrumb.sqlite"
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.data_dir, 0o700)
+        conn = sqlite3.connect(db)
+        conn.executescript(
+            """
+            CREATE TABLE schema_meta (version INTEGER NOT NULL);
+            INSERT INTO schema_meta(version) VALUES (1);
+            CREATE TABLE activities (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                archived_at TEXT
+            );
+            CREATE TABLE checkpoints (
+                id TEXT PRIMARY KEY,
+                activity_id TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                summary TEXT NOT NULL,
+                next_step TEXT,
+                context TEXT,
+                state TEXT NOT NULL,
+                author TEXT NOT NULL,
+                saved_at TEXT NOT NULL,
+                UNIQUE(activity_id, revision)
+            );
+            CREATE TABLE checkpoint_links (
+                checkpoint_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                label TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                target TEXT NOT NULL
+            );
+            CREATE TABLE prefs (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            INSERT INTO activities(id, name, created_at, archived_at)
+            VALUES (
+                '11111111-1111-4111-8111-111111111111',
+                'Gone Trail Map',
+                '2026-09-09T12:00:00Z',
+                '2026-09-09T12:05:00Z'
+            );
+            INSERT INTO checkpoints(
+                id, activity_id, revision, summary, next_step, context, state, author, saved_at
+            ) VALUES (
+                '22222222-2222-4222-8222-222222222222',
+                '11111111-1111-4111-8111-111111111111',
+                1,
+                'Gone published trail notes',
+                'Walk the ridge',
+                '',
+                'in_progress',
+                'You',
+                '2026-09-09T12:01:00Z'
+            );
+            """
+        )
+        conn.commit()
+        conn.close()
+        os.chmod(db, 0o600)
+        activity_id = "11111111-1111-4111-8111-111111111111"
+        got = decode(run_store(self.data_dir, "get", {"activity_id": activity_id, "include_archived": True}))
+        self.assertTrue(got.get("ok"), got)
+        self.assertEqual(got["activity"]["name"], "Gone Trail Map")
+        self.assertEqual(got["activity"]["archived_at"], "2026-09-09T12:05:00Z")
+        self.assertEqual(got["activity"]["archive_generation"], 0)
+        self.assertEqual(got["current"]["summary"], "Gone published trail notes")
+        frozen_legacy = self._frozen(activity_id)
+        self.assertEqual(frozen_legacy["expected_archive_generation"], 0)
+        decode(run_store(self.data_dir, "unarchive-activity", {"activity_id": activity_id}))
+        rearchived = decode(run_store(self.data_dir, "archive-activity", {"activity_id": activity_id}))
+        self.assertTrue(rearchived.get("ok"), rearchived)
+        conn = sqlite3.connect(db)
+        conn.execute(
+            "UPDATE activities SET archived_at = ? WHERE id = ?",
+            ("2026-09-09T12:05:00Z", activity_id),
+        )
+        conn.commit()
+        conn.close()
+        stale = run_store(self.data_dir, "delete-archived-activity", frozen_legacy)
+        self.assertNotEqual(stale.returncode, 0)
+        err = decode(stale)
+        self.assertEqual(err["error"], "stale_revision")
+        self.assertGreater(err["current_archive_generation"], 0)
+        still = decode(run_store(self.data_dir, "get", {"activity_id": activity_id, "include_archived": True}))
+        self.assertEqual(still["current"]["summary"], "Gone published trail notes")
+        current = self._frozen(activity_id)
+        accepted = decode(run_store(self.data_dir, "delete-archived-activity", current))
+        self.assertTrue(accepted.get("ok"), accepted)
+        self.assertEqual(counts(self.data_dir, activity_id)["activities"], 0)
 
 
 if __name__ == "__main__":

@@ -252,6 +252,7 @@ class TestDraftSession(unittest.TestCase):
         self.assertEqual(op.payload["expected_revision"], 1)
         self.assertEqual(op.payload["expected_draft_revision"], 0)
         self.assertEqual(op.payload["expected_archived_at"], "2026-01-01T00:00:00Z")
+        self.assertEqual(op.payload["expected_archive_generation"], 0)
         session.complete_in_flight(
             {"ok": False, "error": "stale_revision", "current_revision": 2, "expected_revision": 1}
         )

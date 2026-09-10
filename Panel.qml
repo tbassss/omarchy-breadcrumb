@@ -570,6 +570,7 @@ Panel {
       activity_id: String(root.activity.id),
       expected_name: String(root.activity.name || ""),
       expected_archived_at: String(root.activity.archived_at),
+      expected_archive_generation: Number(root.activity.archive_generation || 0),
       expected_revision: root.revision,
       expected_draft_revision: root.draftRevision
     }
@@ -597,6 +598,7 @@ Panel {
       expected_revision: frozen.expected_revision,
       expected_draft_revision: frozen.expected_draft_revision,
       expected_archived_at: frozen.expected_archived_at,
+      expected_archive_generation: frozen.expected_archive_generation,
       expected_name: frozen.expected_name
     }, { activityId: frozen.activity_id })
   }

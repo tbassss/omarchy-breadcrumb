@@ -366,11 +366,13 @@ class TestActivities(unittest.TestCase):
         self.assertTrue(got.get("ok"), got)
         self.assertEqual(got["activity"]["name"], "Study")
         self.assertIsNone(got["activity"]["archived_at"])
+        self.assertEqual(got["activity"]["archive_generation"], 0)
         self.assertEqual(got["current"]["summary"], "Finished the routing lesson")
         archived = decode(
             run_store(self.data_dir, "archive-activity", {"activity_id": "11111111-1111-4111-8111-111111111111"})
         )
         self.assertIsNotNone(archived["activity"]["archived_at"])
+        self.assertEqual(archived["activity"]["archive_generation"], 1)
         listed = decode(run_store(self.data_dir, "list-activities", {"include_archived": True}))
         self.assertEqual(listed["activities"][0]["id"], "11111111-1111-4111-8111-111111111111")
 

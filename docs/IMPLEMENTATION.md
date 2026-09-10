@@ -17,7 +17,10 @@ Post-v0.1.0 archived-activity permanent deletion is documented in
 documented in [UNARCHIVE_ACTIVITY.md](UNARCHIVE_ACTIVITY.md). Neither
 changes the public `bin/breadcrumb` command. Compact cannot display or
 execute delete confirmation; collapse cancels pending confirmation.
-Isolated native coverage is `tests/native/run-delete-isolated.sh` and
+Delete confirmation freezes `expected_archive_generation` as well as
+`expected_archived_at`; unarchive retains generation so same-second
+re-archive cannot reuse consent. Isolated native coverage is
+`tests/native/run-delete-isolated.sh` and
 `tests/native/run-unarchive-isolated.sh`.
 
 ## Supported Omarchy APIs

@@ -207,6 +207,7 @@ history row.
 - Creating, renaming, or archiving activities
 - Unarchiving activities
 - Deleting activities
+- `archive_generation` or other internal store CAS tokens
 - Saving, reading payload of, consuming, or discarding drafts
 - Implicit overwrite, `force`, or omitted `expected_revision`
 - Changing the UI selected activity or view

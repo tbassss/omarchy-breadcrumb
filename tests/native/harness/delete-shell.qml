@@ -41,6 +41,9 @@ ShellRoot {
   property string lastErrorSeen: ""
   property bool externalDone: false
   property int goneRevisionBeforeStale: 0
+  property int frozenArchiveGeneration: -1
+  property string frozenArchivedAt: ""
+  property bool staleCycleRejected: false
 
   function panelObj() {
     return panelLoader.item
@@ -179,7 +182,8 @@ ShellRoot {
         expected_name: confirm.expected_name,
         expected_revision: confirm.expected_revision,
         expected_draft_revision: confirm.expected_draft_revision,
-        expected_archived_at: confirm.expected_archived_at
+        expected_archived_at: confirm.expected_archived_at,
+        expected_archive_generation: confirm.expected_archive_generation
       } : null,
       confirmText: confirmText,
       editSummary: p.editSummary,
@@ -211,6 +215,8 @@ ShellRoot {
       keyboardDefaultCancel: keyboardDefaultCancel,
       returnOnConfirmCancelled: returnOnConfirmCancelled,
       lastErrorSeen: lastErrorSeen,
+      staleCycleRejected: staleCycleRejected,
+      frozenArchiveGeneration: frozenArchiveGeneration,
       classification: "component-test-not-full-host-integration",
       notes: "In-repo deletion harness. Real Panel.qml, packaged overlay, stub KeyboardPanel/Panel. Fictional data. Isolated HOME/XDG offscreen. Not live bar."
     }
@@ -270,6 +276,35 @@ ShellRoot {
     }
     externalPub.command = ["/usr/bin/python3", panelObj().storePath, "publish", JSON.stringify(payloadObj)]
     externalPub.running = true
+  }
+
+  Process {
+    id: externalCycle
+    stdout: StdioCollector { id: cycleOut; waitForEnd: true }
+    stderr: StdioCollector { id: cycleErr; waitForEnd: true }
+    onExited: function(code) {
+      console.log("HARNESS_EXTERNAL_CYCLE exit=" + code + " out=" + cycleOut.text + " err=" + cycleErr.text)
+      if (code !== 0)
+        fail("external archive cycle failed: " + cycleOut.text + " " + cycleErr.text)
+      else
+        externalDone = true
+    }
+  }
+
+  function cycleArchiveSameTime(activityIdValue, archivedAt) {
+    externalDone = false
+    var py = "import json,os,sqlite3,subprocess,sys\n"
+      + "store,activity_id,archived_at=sys.argv[1],sys.argv[2],sys.argv[3]\n"
+      + "data=os.environ['BREADCRUMB_DATA_DIR']\n"
+      + "def run(cmd,payload):\n"
+      + " subprocess.check_call([sys.executable,store,cmd,json.dumps(payload)])\n"
+      + "run('unarchive-activity',{'activity_id':activity_id})\n"
+      + "run('archive-activity',{'activity_id':activity_id})\n"
+      + "conn=sqlite3.connect(os.path.join(data,'breadcrumb.sqlite'))\n"
+      + "conn.execute('UPDATE activities SET archived_at=? WHERE id=?',(archived_at,activity_id))\n"
+      + "conn.commit()\n"
+    externalCycle.command = ["/usr/bin/python3", "-c", py, panelObj().storePath, activityIdValue, archivedAt]
+    externalCycle.running = true
   }
 
   ApplicationWindow {
@@ -793,11 +828,92 @@ ShellRoot {
       if (!idle())
         return
       if (!p.deleteConfirm) {
-        fail("final confirmation did not open")
+        fail("cycle confirmation did not open")
         return
       }
       if (p.deleteConfirm.expected_revision <= goneRevisionBeforeStale) {
-        fail("final freeze reused stale revision")
+        fail("cycle freeze reused stale revision")
+        return
+      }
+      if (p.deleteConfirm.expected_archive_generation === undefined || p.deleteConfirm.expected_archive_generation === null) {
+        fail("cycle freeze missing expected_archive_generation")
+        return
+      }
+      frozenArchiveGeneration = Number(p.deleteConfirm.expected_archive_generation)
+      frozenArchivedAt = String(p.deleteConfirm.expected_archived_at || "")
+      if (!frozenArchivedAt) {
+        fail("cycle freeze missing expected_archived_at")
+        return
+      }
+      cycleArchiveSameTime(goneId, frozenArchivedAt)
+      step = 251
+      stepTicks = 0
+      return
+    }
+
+    if (step === 251) {
+      if (!externalDone)
+        return
+      if (!clickNamedOrText("deleteConfirmButton", "Delete permanently", "confirm-stale-cycle"))
+        return
+      step = 252
+      stepTicks = 0
+      return
+    }
+
+    if (step === 252) {
+      if (!idle())
+        return
+      lastErrorSeen = p.lastError || ""
+      if (!lastErrorSeen) {
+        fail("same-time unarchive/rearchive confirm did not surface lastError")
+        return
+      }
+      if (!p.activity || p.activity.id !== goneId) {
+        fail("same-time cycle confirm deleted the activity")
+        return
+      }
+      if (namesOf(p).indexOf(goneName) < 0) {
+        fail("same-time cycle confirm removed gone from the list")
+        return
+      }
+      staleCycleRejected = true
+      findings.push("stale_cycle_left_generation_frozen=" + frozenArchiveGeneration)
+      snapshots.push(snap("after-stale-cycle-confirm"))
+      if (!clickShown("Reload", "reload-after-stale-cycle"))
+        return
+      step = 253
+      stepTicks = 0
+      return
+    }
+
+    if (step === 253) {
+      if (!idle())
+        return
+      if (!p.activity || p.activity.id !== goneId || !p.activity.archived_at) {
+        fail("reload after stale cycle lost archived gone")
+        return
+      }
+      if (Number(p.activity.archive_generation || 0) <= frozenArchiveGeneration) {
+        fail("reload after stale cycle did not advance archive_generation")
+        return
+      }
+      if (!clickNamedOrText("deleteRequestButton", "Delete permanently", "request-final"))
+        return
+      step = 254
+      stepTicks = 0
+      return
+    }
+
+    if (step === 254) {
+      if (!idle())
+        return
+      if (!p.deleteConfirm) {
+        fail("final confirmation did not open")
+        return
+      }
+      if (Number(p.deleteConfirm.expected_archive_generation) <= frozenArchiveGeneration) {
+        fail("final freeze reused stale archive_generation")
         return
       }
       if (!clickNamedOrText("deleteConfirmButton", "Delete permanently", "confirm-final"))

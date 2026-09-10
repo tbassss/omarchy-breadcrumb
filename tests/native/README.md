@@ -63,8 +63,8 @@ It asserts Compact has no delete request, collapse cancels pending
 confirmation, Compact cannot display or execute confirm, re-expand
 does not resurrect confirm, keyboard default is Cancel (Return is a
 no-op cancel), named-target warning, Cancel no-op, switch clears
-confirm, stale publish fail-closed, selection fallback, and
-last-entity empty state.
+confirm, stale publish fail-closed, same-second unarchive/re-archive
+retained confirmation, selection fallback, and last-entity empty state.
 
 ```bash
 ARCHIVE=/path/to/candidate.tar \

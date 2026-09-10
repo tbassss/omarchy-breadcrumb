@@ -51,6 +51,7 @@ class DraftSession:
         self.activity_name = ""
         self.archived = False
         self.archived_at = ""
+        self.archive_generation = 0
         self.last_error = ""
 
     def type_text(self, text: str) -> None:
@@ -205,6 +206,7 @@ class DraftSession:
             self.activity_id = str(selected)
             self.archived = False
             self.archived_at = ""
+            self.archive_generation = 0
             self.activity_name = ""
             self.has_live_draft = False
             self.dirty = False
@@ -218,6 +220,7 @@ class DraftSession:
         self.activity_id = ""
         self.archived = False
         self.archived_at = ""
+        self.archive_generation = 0
         self.activity_name = ""
         self.has_live_draft = False
         self.dirty = False
@@ -300,6 +303,7 @@ class DraftSession:
             "activity_id": self.activity_id,
             "expected_name": self.activity_name,
             "expected_archived_at": self.archived_at,
+            "expected_archive_generation": self.archive_generation,
             "expected_revision": self.published_revision,
             "expected_draft_revision": self.draft_generation,
         }
@@ -327,6 +331,7 @@ class DraftSession:
                     "expected_revision": frozen["expected_revision"],
                     "expected_draft_revision": frozen["expected_draft_revision"],
                     "expected_archived_at": frozen["expected_archived_at"],
+                    "expected_archive_generation": frozen["expected_archive_generation"],
                     "expected_name": frozen["expected_name"],
                 },
             )

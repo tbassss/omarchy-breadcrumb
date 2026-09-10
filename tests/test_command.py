@@ -129,6 +129,8 @@ class TestPublicCommand(unittest.TestCase):
         self.assertEqual(listed["activities"][0]["summary"], "Finished the routing lesson")
         self.assertEqual(listed["activities"][1]["revision"], 0)
         self.assertIsNone(listed["activities"][1]["summary"])
+        self.assertNotIn("archive_generation", listed["activities"][0])
+        self.assertNotIn("archive_generation", listed["activities"][1])
 
         selected_before = decode(run_store(self.data_dir, "get", {}))["activity"]["id"]
         self.assertEqual(selected_before, app["id"])
@@ -137,6 +139,7 @@ class TestPublicCommand(unittest.TestCase):
         )
         self.assertTrue(read.get("ok"), read)
         self.assertEqual(read["activity"]["id"], study["id"])
+        self.assertNotIn("archive_generation", read["activity"])
         self.assertEqual(read["revision"], 1)
         self.assertEqual(read["current"]["summary"], "Finished the routing lesson")
         self.assertFalse(read["has_live_draft"])

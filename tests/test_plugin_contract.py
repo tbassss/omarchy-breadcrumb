@@ -343,6 +343,7 @@ class TestPluginContract(unittest.TestCase):
         self.assertIn("function confirmDeleteArchived(", qml)
         self.assertIn("deleteConfirm", qml)
         self.assertIn("expected_archived_at", qml)
+        self.assertIn("expected_archive_generation", qml)
         self.assertIn("expected_draft_revision", qml)
         self.assertIn("expected_revision", qml)
         self.assertIn("expected_name", qml)
@@ -428,6 +429,9 @@ class TestPluginContract(unittest.TestCase):
         self.assertIn("compact confirmDeleteArchived deleted the activity", harness)
         self.assertIn("keyboard default was not Cancel", harness)
         self.assertIn("Return on confirmation was not a Cancel no-op", harness)
+        self.assertIn("same-time unarchive/rearchive confirm did not surface lastError", harness)
+        self.assertIn("same-time cycle confirm deleted the activity", harness)
+        self.assertIn("final freeze reused stale archive_generation", harness)
 
     def test_native_unarchive_harness_is_in_repo(self) -> None:
         native = ROOT / "tests" / "native"
