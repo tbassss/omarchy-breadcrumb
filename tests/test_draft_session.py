@@ -170,6 +170,127 @@ class TestDraftSession(unittest.TestCase):
         self.assertEqual(session.published_revision, 3)
         self.assertEqual(session.published_summary, "Keep-editing draft")
 
+    def test_delete_cancel_is_noop(self) -> None:
+        session = DraftSession(activity_id="A")
+        session.activity_name = "Gone Trail Map"
+        session.archived = True
+        session.archived_at = "2026-01-01T00:00:00Z"
+        session.published_revision = 1
+        session.published_summary = "Published lantern"
+        session.editor = "Draft still here"
+        session.has_live_draft = True
+        session.dirty = True
+        session.draft_generation = 2
+        session.request_delete()
+        self.assertEqual(session.delete_confirm["expected_name"], "Gone Trail Map")
+        self.assertEqual(session.delete_confirm["expected_revision"], 1)
+        self.assertEqual(session.delete_confirm["expected_draft_revision"], 2)
+        session.cancel_delete()
+        self.assertIsNone(session.delete_confirm)
+        session.confirm_delete()
+        session.pump()
+        self.assertIsNone(session.in_flight)
+        self.assertEqual(session.queue, [])
+        self.assertEqual(session.editor, "Draft still here")
+        self.assertTrue(session.has_live_draft)
+
+    def test_delete_target_switch_clears_confirmation(self) -> None:
+        session = DraftSession(activity_id="A")
+        session.activity_name = "Gone Trail Map"
+        session.archived = True
+        session.archived_at = "2026-01-01T00:00:00Z"
+        session.published_revision = 1
+        session.request_delete()
+        session.navigate("B")
+        self.assertIsNone(session.delete_confirm)
+        self.assertEqual(session.activity_id, "B")
+        session.confirm_delete()
+        session.pump()
+        self.assertIsNone(session.in_flight)
+        self.assertEqual(session.queue, [])
+
+    def test_delete_last_activity_clears_selection(self) -> None:
+        session = DraftSession(activity_id="A")
+        session.activity_name = "Only Trail"
+        session.archived = True
+        session.archived_at = "2026-01-01T00:00:00Z"
+        session.published_revision = 1
+        session.editor = "Last draft"
+        session.has_live_draft = True
+        session.draft_generation = 1
+        session.request_delete()
+        session.confirm_delete()
+        session.pump()
+        self.assertEqual(session.in_flight.kind, "delete-archived")
+        self.assertEqual(session.in_flight.payload["expected_name"], "Only Trail")
+        session.complete_in_flight(
+            {"ok": True, "deleted_activity_id": "A", "selected_activity_id": None}
+        )
+        self.assertEqual(session.activity_id, "")
+        self.assertFalse(session.has_live_draft)
+        self.assertFalse(session.dirty)
+        self.assertEqual(session.editor, "")
+        self.assertIsNone(session.delete_confirm)
+
+    def test_delete_sends_frozen_tokens_and_failed_delete_keeps_draft(self) -> None:
+        session = DraftSession(activity_id="A")
+        session.activity_name = "Stale Trail"
+        session.archived = True
+        session.archived_at = "2026-01-01T00:00:00Z"
+        session.published_revision = 1
+        session.draft_generation = 0
+        session.editor = "Keep this draft"
+        session.has_live_draft = True
+        session.dirty = True
+        session.request_delete()
+        session.published_revision = 2
+        session.draft_generation = 4
+        session.confirm_delete()
+        session.pump()
+        op = session.in_flight
+        self.assertEqual(op.kind, "delete-archived")
+        self.assertEqual(op.payload["expected_revision"], 1)
+        self.assertEqual(op.payload["expected_draft_revision"], 0)
+        self.assertEqual(op.payload["expected_archived_at"], "2026-01-01T00:00:00Z")
+        session.complete_in_flight(
+            {"ok": False, "error": "stale_revision", "current_revision": 2, "expected_revision": 1}
+        )
+        self.assertEqual(session.editor, "Keep this draft")
+        self.assertTrue(session.has_live_draft)
+        self.assertEqual(session.draft_status, "error")
+        self.assertEqual(session.last_error, "stale_revision")
+
+    def test_queued_autosave_after_delete_does_not_resurrect(self) -> None:
+        session = DraftSession(activity_id="A")
+        session.activity_name = "Gone Trail Map"
+        session.archived = True
+        session.archived_at = "2026-01-01T00:00:00Z"
+        session.published_revision = 1
+        session.editor = "draft-v1"
+        session.has_live_draft = True
+        session.dirty = True
+        session.request_delete()
+        session.confirm_delete()
+        session.type_text("draft-v2-must-not-resurrect")
+        kinds = ([session.in_flight.kind] if session.in_flight else []) + [op.kind for op in session.queue]
+        self.assertIn("delete-archived", kinds)
+        session.pump()
+        if session.in_flight and session.in_flight.kind != "delete-archived":
+            session.queue = [session.in_flight, *session.queue]
+            session.in_flight = None
+            session.queue = [op for op in session.queue if op.kind == "delete-archived"] + [
+                op for op in session.queue if op.kind != "delete-archived"
+            ]
+            session.pump()
+        self.assertEqual(session.in_flight.kind, "delete-archived")
+        session.complete_in_flight(
+            {"ok": True, "deleted_activity_id": "A", "selected_activity_id": None}
+        )
+        kinds = ([session.in_flight.kind] if session.in_flight else []) + [op.kind for op in session.queue]
+        self.assertNotIn("autosave", kinds)
+        self.assertEqual(session.activity_id, "")
+        self.assertFalse(session.has_live_draft)
+
 
 if __name__ == "__main__":
     unittest.main()

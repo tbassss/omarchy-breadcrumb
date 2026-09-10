@@ -49,6 +49,34 @@ Added for #7:
 
 These are native evidence. A Python source-contract pass is not a substitute. They are not live bar / real KeyboardPanel layer-shell acceptance. They are not a live installed SSH workflow.
 
+## Archived delete confirmation
+
+`tests/native/run-delete-isolated.sh` plus `harness/delete-shell.qml`
+is the in-repo deletion component test. Same isolation as above:
+disposable HOME/XDG, offscreen Qt, packaged overlay, stub
+KeyboardPanel/host Panel. `LIVE_PLUGIN_DIR` defaults to an empty
+disposable directory so the runner absence guard is not the live
+plugin path; real live plugin/shell/pid hashes are snapshotted
+independently. That is not proof the live plugin is absent.
+
+It asserts Compact has no delete request, collapse cancels pending
+confirmation, Compact cannot display or execute confirm, re-expand
+does not resurrect confirm, keyboard default is Cancel (Return is a
+no-op cancel), named-target warning, Cancel no-op, switch clears
+confirm, stale publish fail-closed, selection fallback, and
+last-entity empty state.
+
+```bash
+ARCHIVE=/path/to/candidate.tar \
+CANDIDATE_SHA=<git sha> \
+EVIDENCE_DIR=/tmp/breadcrumb-delete-native-XXXX \
+HARNESS_SRC=/path/to/tests/native/harness \
+  ./tests/native/run-delete-isolated.sh
+```
+
+RED against `a00bb04` must fail on Compact confirmation after collapse.
+GREEN is the repaired candidate.
+
 ## Run on the-cave only
 
 Isolated `HOME`/`XDG`, `QT_QPA_PLATFORM=offscreen`, unique `XDG_RUNTIME_DIR`. No Wayland, no live plugin enable, no `shell.json` mutation, no shell restart. The runner overlays packaged Omarchy controls and keeps KeyboardPanel/Panel stubs.

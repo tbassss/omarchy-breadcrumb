@@ -335,6 +335,76 @@ class TestPluginContract(unittest.TestCase):
         self.assertIn("draftBaseRevision", qml)
         self.assertNotIn("consume_draft_revision", qml.split("function sendOp")[0])
 
+    def test_archived_delete_confirmation_is_frozen_and_not_bulk(self) -> None:
+        qml = PANEL.read_text(encoding="utf-8")
+        self.assertIn("delete-archived-activity", qml)
+        self.assertIn("function requestDeleteArchived(", qml)
+        self.assertIn("function cancelDeleteArchived(", qml)
+        self.assertIn("function confirmDeleteArchived(", qml)
+        self.assertIn("deleteConfirm", qml)
+        self.assertIn("expected_archived_at", qml)
+        self.assertIn("expected_draft_revision", qml)
+        self.assertIn("expected_revision", qml)
+        self.assertIn("expected_name", qml)
+        self.assertIn("Delete permanently", qml)
+        self.assertIn("checkpoints, history, links, and the draft", qml)
+        self.assertIn("root.activity.archived_at", qml)
+        self.assertNotIn("delete-activities", qml)
+        self.assertNotIn("bulk-delete", qml)
+        send_idx = qml.index("function sendOp(")
+        send_chunk = qml[send_idx : send_idx + 2200]
+        self.assertEqual(send_chunk.find("delete-archived-activity"), -1)
+        request_idx = qml.index("function requestDeleteArchived(")
+        request_chunk = qml[request_idx : qml.index("function cancelDeleteArchived(")]
+        self.assertIn("root.expanded", request_chunk)
+        confirm_idx = qml.index("function confirmDeleteArchived(")
+        confirm_chunk = qml[confirm_idx : confirm_idx + 900]
+        self.assertIn("dropUnsentAutosaves", confirm_chunk)
+        self.assertNotIn("root.revision", confirm_chunk)
+        self.assertIn("frozen.expected_revision", confirm_chunk)
+        self.assertIn("root.expanded", confirm_chunk)
+        handler_idx = qml.index("function handleStoreResult(")
+        handler = qml[handler_idx : handler_idx + 4500]
+        self.assertIn('action === "delete-archived-activity"', handler)
+        switch_idx = qml.index("function doSwitch(")
+        switch_chunk = qml[switch_idx : switch_idx + 400]
+        self.assertIn("deleteConfirm", switch_chunk)
+        toggle_idx = qml.index("function toggleView(")
+        toggle_chunk = qml[toggle_idx : qml.index("function openValidatedLink(")]
+        self.assertIn("deleteConfirm", toggle_chunk)
+        self.assertIn('next === "compact"', toggle_chunk)
+        self.assertIn("visible: !!root.deleteConfirm && root.expanded", qml)
+        self.assertIn("objectName: \"deleteCancelButton\"", qml)
+        self.assertIn("objectName: \"deleteConfirmButton\"", qml)
+        self.assertIn("objectName: \"deleteRequestButton\"", qml)
+        keyboard_idx = qml.index("function keyboardTargets(")
+        keyboard = qml[keyboard_idx : qml.index("function applyCursorHighlight(")]
+        self.assertLess(keyboard.index("deleteCancelButton"), keyboard.index("deleteConfirmButton"))
+        self.assertIn("deleteRequestButton", keyboard)
+        activate_idx = qml.index("function activateKeyboardCursor(")
+        activate = qml[activate_idx : qml.index("function clearDraftState(")]
+        self.assertIn("deleteCancelButton", activate)
+        self.assertIn("deleteConfirmButton", activate)
+        self.assertIn("deleteRequestButton", activate)
+
+    def test_native_delete_harness_is_in_repo(self) -> None:
+        native = ROOT / "tests" / "native"
+        self.assertTrue((native / "run-delete-isolated.sh").is_file())
+        self.assertTrue((native / "harness" / "delete-shell.qml").is_file())
+        harness = (native / "harness" / "delete-shell.qml").read_text(encoding="utf-8")
+        self.assertIn("compact displayed permanent delete confirmation after collapse", harness)
+        self.assertIn("confirmation resurrected on re-expand", harness)
+        self.assertIn("compact confirmDeleteArchived deleted the activity", harness)
+        self.assertIn("keyboard default was not Cancel", harness)
+        self.assertIn("Return on confirmation was not a Cancel no-op", harness)
+
+    def test_public_command_docs_exclude_delete(self) -> None:
+        command = (ROOT / "bin" / "breadcrumb").read_text(encoding="utf-8")
+        doc = (ROOT / "docs" / "COMMAND.md").read_text(encoding="utf-8")
+        self.assertNotIn("delete-archived-activity", command)
+        self.assertIn("Creating, renaming, or archiving activities", doc)
+        self.assertIn("Deleting activities", doc)
+
 
 if __name__ == "__main__":
     unittest.main()

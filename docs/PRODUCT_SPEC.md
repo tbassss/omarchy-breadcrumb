@@ -1,7 +1,7 @@
 # Breadcrumb — Product Spec
 
-Status: Product behavior approved by Tyler in conversation. Implementation slices #3–#7 exist in this repository; issue #8 is release-candidate preparation only.
-Stage: Installed private candidate; core live journeys verified. Remaining acceptance is tracked in RELEASE_PREP.md and issue #8. Not a published release.
+Status: Product behavior approved by Tyler. Implementation slices #3–#7 shipped in public v0.1.0. Archived-activity permanent deletion is an explicitly approved post-v0.1.0 candidate in this branch.
+Stage: Public repository; v0.1.0 published. This candidate is not a new GitHub release or directory listing. Remaining first-release evidence is in RELEASE_PREP.md.
 Mainframe Build Tracker: None.
 
 ## Purpose
@@ -24,7 +24,7 @@ WGU, Coach, and Life are Tyler's examples, not built-in categories. Public docum
 
 ### Activity navigation
 
-Users can create and rename activities, switch among them, and archive finished activities without erasing checkpoints. A compact activity selector and current checkpoint must remain usable with long names and more activities than fit across one row. Approved layout: one interface with Compact and Expanded views sharing the same activity and checkpoint state. Default to Compact on first use and remember the last chosen view. Compact uses an activity picker and displays the status summary, next step, timestamp, and reported author. Expanded uses an activity sidebar and provides context, links, editing, and history. Editing and history are implemented once, in Expanded. Expand/Collapse must preserve the selected activity and manual draft; collapsing an editor shows the published checkpoint, not an unsaved draft. On narrow screens, adapt the layout without losing the distinction between glance and editing views.
+Users can create and rename activities, switch among them, and archive finished activities without erasing checkpoints. An archived activity can be permanently deleted only after a confirmation that names that activity and warns that its checkpoints, history, links, and draft will be removed. Cancel leaves the activity unchanged. There is no bulk delete. A compact activity selector and current checkpoint must remain usable with long names and more activities than fit across one row. Approved layout: one interface with Compact and Expanded views sharing the same activity and checkpoint state. Default to Compact on first use and remember the last chosen view. Compact uses an activity picker and displays the status summary, next step, timestamp, and reported author. Expanded uses an activity sidebar and provides context, links, editing, and history. Editing and history are implemented once, in Expanded. Expand/Collapse must preserve the selected activity and manual draft; collapsing an editor shows the published checkpoint, not an unsaved draft. On narrow screens, adapt the layout without losing the distinction between glance and editing views.
 
 ### Current checkpoint
 
@@ -51,7 +51,7 @@ If an agent updates an activity while a human is drafting, preserve both the pub
 
 Every successful checkpoint publication creates a dated history entry for that activity. Earlier entries remain readable. Bringing an older checkpoint forward creates a new checkpoint; it does not rewrite intervening history. Creating, renaming, switching, or archiving an activity must not mix histories.
 
-For the first release, there is no automatic history expiration or silent deletion. History views load a bounded portion at a time. Destructive history-management features are deferred; document where local data lives and preserve it on plugin removal.
+For the first release, there is no automatic history expiration or silent deletion. History views load a bounded portion at a time. After explicit owner approval, a confirmed permanent delete is available only for an archived activity and removes that activity's checkpoints, history, links, and draft. Cancel is a no-op. There is no bulk delete and no public command delete. Document where local data lives and preserve it on plugin removal.
 
 ### Agent and script updates
 
@@ -88,6 +88,7 @@ For Tyler, use his existing authorized SSH route to invoke the local command on 
 8. Exercise malformed input, markup, command-like links, missing files, storage errors, and interrupted writes. No unintended execution, false success, or loss of the previously committed state.
 9. Verify keyboard operation, long content, empty states, theme changes, popup placement, and both monitors on a supported Omarchy build. Do not claim compatibility with configurations not tested.
 10. Install from the documented source layout, use it manually without an agent, and remove it without deleting user checkpoints.
+11. Archive an activity, confirm permanent delete by name, and verify its checkpoints, history, links, and draft are gone while a neighbor activity is unchanged. Cancel leaves the archived activity intact.
 
 ## Non-goals for the first release
 
@@ -106,4 +107,4 @@ No dependency on Tyler's custom Tray repair. Use supported Omarchy plugin interf
 
 ## Approval and remaining design decisions
 
-Tyler approved this product spec, including archive behavior and no automatic history expiration. The compact status vocabulary is an approved starting point. Visual layout will be shown in the prototype. Implementation schema, language boundaries, module paths, and exact CLI syntax belong to the subsequent technical plan, not choices Tyler needs to make now.
+Tyler approved this product spec, including archive behavior, no automatic history expiration, and later explicit approval of archived-only permanent deletion (not Trash). The compact status vocabulary is an approved starting point. Visual layout will be shown in the prototype. Implementation schema, language boundaries, module paths, and exact CLI syntax belong to the subsequent technical plan, not choices Tyler needs to make now.

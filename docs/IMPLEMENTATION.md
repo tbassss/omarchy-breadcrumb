@@ -12,6 +12,12 @@ changed except `validate-link` existence checks used only on explicit Open.
 AI assistance was used to implement this slice. Owner usability approval is not
 a claim that the owner audited code security.
 
+Post-v0.1.0 archived-activity permanent deletion is documented in
+[DELETE_ARCHIVED_ACTIVITY.md](DELETE_ARCHIVED_ACTIVITY.md). It does not change
+the public `bin/breadcrumb` command. Compact cannot display or execute
+delete confirmation; collapse cancels pending confirmation. Isolated
+native coverage is `tests/native/run-delete-isolated.sh`.
+
 ## Supported Omarchy APIs
 
 Inspected read-only on the-cave (`tbasss@the-cave`, no package patches):

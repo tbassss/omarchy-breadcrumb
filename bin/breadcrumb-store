@@ -387,6 +387,81 @@ def cmd_archive_activity(conn: sqlite3.Connection, payload: dict) -> None:
     ok({"activity": activity_payload(row)})
 
 
+def expected_archived_at_value(value: object) -> str:
+    text = plain_text(value, field="expected_archived_at", required=True, max_len=40)
+    assert text is not None
+    if not text.endswith("Z"):
+        fail("validation", "expected_archived_at must be a UTC timestamp")
+    return text
+
+
+def cmd_delete_archived_activity(conn: sqlite3.Connection, payload: dict) -> None:
+    activity_id = require_activity_id(payload.get("activity_id"))
+    expected_revision = expected_revision_value(payload.get("expected_revision"))
+    expected_draft_revision = expected_draft_revision_value(payload.get("expected_draft_revision"))
+    expected_archived_at = expected_archived_at_value(payload.get("expected_archived_at"))
+    expected_name = plain_text(payload.get("expected_name"), field="expected_name", required=True, max_len=80)
+    assert expected_name is not None
+    conn.execute("BEGIN IMMEDIATE")
+    activity = load_activity(conn, activity_id)
+    if activity is None:
+        fail("validation", "Unknown activity")
+    if activity["archived_at"] is None:
+        fail("validation", "Only archived activities can be deleted")
+    if activity["archived_at"] != expected_archived_at:
+        fail(
+            "stale_revision",
+            "This activity is no longer in the archived state you confirmed.",
+            {"current_archived_at": activity["archived_at"], "expected_archived_at": expected_archived_at},
+        )
+    if activity["name"] != expected_name:
+        fail(
+            "stale_revision",
+            "This activity was renamed after you confirmed deletion.",
+            {"current_name": activity["name"], "expected_name": expected_name},
+        )
+    current = latest_revision(conn, activity_id)
+    if current != expected_revision:
+        fail(
+            "stale_revision",
+            "A newer checkpoint exists. Refresh and try again.",
+            {"current_revision": current, "expected_revision": expected_revision},
+        )
+    draft_rev = current_draft_revision(conn, activity_id)
+    if draft_rev != expected_draft_revision:
+        fail(
+            "stale_revision",
+            "This draft was updated from another session. Refresh and try again.",
+            {"current_draft_revision": draft_rev, "expected_draft_revision": expected_draft_revision},
+        )
+    try:
+        conn.execute(
+            """
+            DELETE FROM checkpoint_links
+            WHERE checkpoint_id IN (SELECT id FROM checkpoints WHERE activity_id = ?)
+            """,
+            (activity_id,),
+        )
+        conn.execute("DELETE FROM checkpoints WHERE activity_id = ?", (activity_id,))
+        conn.execute("DELETE FROM draft_links WHERE activity_id = ?", (activity_id,))
+        conn.execute("DELETE FROM drafts WHERE activity_id = ?", (activity_id,))
+        conn.execute("DELETE FROM activities WHERE id = ?", (activity_id,))
+        selected = pref(conn, "selected_activity_id", "")
+        if selected == activity_id:
+            remaining = list_activity_rows(conn, include_archived=True)
+            if remaining:
+                set_pref(conn, "selected_activity_id", remaining[0]["id"])
+                selected = remaining[0]["id"]
+            else:
+                conn.execute("DELETE FROM prefs WHERE key = 'selected_activity_id'")
+                selected = ""
+        conn.commit()
+    except sqlite3.Error as exc:
+        conn.execute("ROLLBACK")
+        fail("io", f"Could not delete the archived activity: {exc}")
+    ok({"deleted_activity_id": activity_id, "selected_activity_id": selected or None})
+
+
 def history_limit_value(value: object) -> int:
     if value is None:
         return HISTORY_PAGE_DEFAULT
@@ -1233,6 +1308,7 @@ COMMANDS = {
     "list-activities": cmd_list_activities,
     "rename-activity": cmd_rename_activity,
     "archive-activity": cmd_archive_activity,
+    "delete-archived-activity": cmd_delete_archived_activity,
     "get": cmd_get,
     "head": cmd_head,
     "save-draft": cmd_save_draft,
