@@ -113,6 +113,8 @@ class DraftSession:
             self._ack_publish(op, result)
         elif op.kind == "delete-archived":
             self._ack_delete(op, result)
+        elif op.kind == "unarchive":
+            self._ack_unarchive(op, result)
         self.pump()
         self._maybe_finish_nav()
 
@@ -226,6 +228,17 @@ class DraftSession:
         self.published_revision = 0
         self.published_summary = ""
 
+    def _ack_unarchive(self, op: Op, result: dict) -> None:
+        if not result.get("ok"):
+            self.draft_status = "error"
+            self.last_error = str(result.get("error") or "error")
+            return
+        if op.activity_id != self.activity_id:
+            return
+        self.archived = False
+        self.archived_at = ""
+        self.delete_confirm = None
+
     def save_checkpoint(self) -> None:
         self.enqueue(Op(kind="publish", activity_id=self.activity_id, edit_sequence=self.edit_sequence, payload={}))
 
@@ -316,5 +329,16 @@ class DraftSession:
                     "expected_archived_at": frozen["expected_archived_at"],
                     "expected_name": frozen["expected_name"],
                 },
+            )
+        )
+
+    def unarchive(self) -> None:
+        self.delete_confirm = None
+        self.enqueue(
+            Op(
+                kind="unarchive",
+                activity_id=self.activity_id,
+                edit_sequence=self.edit_sequence,
+                payload={"activity_id": self.activity_id},
             )
         )

@@ -387,6 +387,37 @@ class TestPluginContract(unittest.TestCase):
         self.assertIn("deleteConfirmButton", activate)
         self.assertIn("deleteRequestButton", activate)
 
+    def test_unarchive_is_distinct_from_restore_and_delete(self) -> None:
+        qml = PANEL.read_text(encoding="utf-8")
+        self.assertIn("unarchive-activity", qml)
+        self.assertIn("function unarchiveActivity(", qml)
+        self.assertIn('text: "Unarchive"', qml)
+        self.assertIn('objectName: "unarchiveButton"', qml)
+        self.assertIn("root.deleteConfirm = null", qml)
+        archive_idx = qml.index('text: "Archive activity"')
+        archive_chunk = qml[archive_idx - 200 : archive_idx + 400]
+        self.assertIn("!root.activity.archived_at", archive_chunk)
+        unarchive_idx = qml.index('objectName: "unarchiveButton"')
+        unarchive_chunk = qml[unarchive_idx : unarchive_idx + 700]
+        self.assertIn("root.activity.archived_at", unarchive_chunk)
+        self.assertIn("root.unarchiveActivity(", unarchive_chunk)
+        self.assertNotIn("enabled:", unarchive_chunk)
+        self.assertIn("focusable: (!root.busy", unarchive_chunk)
+        restore_idx = qml.index('text: "Restore"')
+        self.assertNotEqual(restore_idx, unarchive_idx)
+        handler_idx = qml.index("function handleStoreResult(")
+        handler = qml[handler_idx : handler_idx + 5000]
+        self.assertIn('action === "unarchive-activity"', handler)
+        keyboard_idx = qml.index("function keyboardTargets(")
+        keyboard = qml[keyboard_idx : qml.index("function applyCursorHighlight(")]
+        self.assertIn("unarchiveButton", keyboard)
+        activate_idx = qml.index("function activateKeyboardCursor(")
+        activate = qml[activate_idx : qml.index("function clearDraftState(")]
+        self.assertIn("unarchiveButton", activate)
+        unarchive_fn = qml[qml.index("function unarchiveActivity(") : qml.index("function requestDeleteArchived(")]
+        self.assertIn("deleteConfirm = null", unarchive_fn)
+        self.assertNotIn("delete-archived-activity", unarchive_fn)
+
     def test_native_delete_harness_is_in_repo(self) -> None:
         native = ROOT / "tests" / "native"
         self.assertTrue((native / "run-delete-isolated.sh").is_file())
@@ -398,12 +429,31 @@ class TestPluginContract(unittest.TestCase):
         self.assertIn("keyboard default was not Cancel", harness)
         self.assertIn("Return on confirmation was not a Cancel no-op", harness)
 
+    def test_native_unarchive_harness_is_in_repo(self) -> None:
+        native = ROOT / "tests" / "native"
+        self.assertTrue((native / "run-unarchive-isolated.sh").is_file())
+        self.assertTrue((native / "harness" / "unarchive-shell.qml").is_file())
+        harness = (native / "harness" / "unarchive-shell.qml").read_text(encoding="utf-8")
+        self.assertIn("compact showed Unarchive", harness)
+        self.assertIn("unarchive did not preserve selection", harness)
+        self.assertIn("unarchive appended a checkpoint", harness)
+        self.assertIn("unarchive dropped in-memory draft", harness)
+        self.assertIn("delete remained after unarchive", harness)
+        self.assertIn("pending delete confirm survived unarchive", harness)
+        self.assertIn("keyboard Unarchive missing", harness)
+        runner = (native / "run-unarchive-isolated.sh").read_text(encoding="utf-8")
+        self.assertIn("LIVE_PLUGIN_DIR", runner)
+        self.assertIn("empty disposable directory", runner)
+        self.assertIn("real-live-plugin.sha256", runner)
+
     def test_public_command_docs_exclude_delete(self) -> None:
         command = (ROOT / "bin" / "breadcrumb").read_text(encoding="utf-8")
         doc = (ROOT / "docs" / "COMMAND.md").read_text(encoding="utf-8")
         self.assertNotIn("delete-archived-activity", command)
+        self.assertNotIn("unarchive-activity", command)
         self.assertIn("Creating, renaming, or archiving activities", doc)
         self.assertIn("Deleting activities", doc)
+        self.assertIn("Unarchiving activities", doc)
 
 
 if __name__ == "__main__":

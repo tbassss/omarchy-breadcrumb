@@ -205,6 +205,7 @@ history row.
 ## Not in this interface
 
 - Creating, renaming, or archiving activities
+- Unarchiving activities
 - Deleting activities
 - Saving, reading payload of, consuming, or discarding drafts
 - Implicit overwrite, `force`, or omitted `expected_revision`

@@ -78,6 +78,8 @@ and [docs/RELEASE_PREP.md](docs/RELEASE_PREP.md).
 - [Approved product spec](docs/PRODUCT_SPEC.md)
 - [Public command](docs/COMMAND.md)
 - [Issue #7 implementation notes](docs/IMPLEMENTATION.md)
+- [Archived-activity permanent deletion](docs/DELETE_ARCHIVED_ACTIVITY.md)
+- [Unarchive activity](docs/UNARCHIVE_ACTIVITY.md)
 - [Release-candidate preparation](docs/RELEASE_PREP.md)
 - [Live install/rollback plan](docs/LIVE_TEST_PLAN.md) (gated)
 - [Fictional screenshots](docs/screenshots/README.md)

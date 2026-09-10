@@ -387,6 +387,27 @@ def cmd_archive_activity(conn: sqlite3.Connection, payload: dict) -> None:
     ok({"activity": activity_payload(row)})
 
 
+def cmd_unarchive_activity(conn: sqlite3.Connection, payload: dict) -> None:
+    activity_id = require_activity_id(payload.get("activity_id"))
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        activity = load_activity(conn, activity_id)
+        if activity is None:
+            conn.execute("ROLLBACK")
+            fail("validation", "Unknown activity")
+        if activity["archived_at"] is None:
+            conn.execute("COMMIT")
+            ok({"activity": activity_payload(activity)})
+            return
+        conn.execute("UPDATE activities SET archived_at = NULL WHERE id = ?", (activity_id,))
+        conn.execute("COMMIT")
+    except sqlite3.Error as exc:
+        conn.execute("ROLLBACK")
+        fail("io", f"Could not unarchive the activity: {exc}")
+    row = load_activity(conn, activity_id)
+    ok({"activity": activity_payload(row)})
+
+
 def expected_archived_at_value(value: object) -> str:
     text = plain_text(value, field="expected_archived_at", required=True, max_len=40)
     assert text is not None
@@ -1308,6 +1329,7 @@ COMMANDS = {
     "list-activities": cmd_list_activities,
     "rename-activity": cmd_rename_activity,
     "archive-activity": cmd_archive_activity,
+    "unarchive-activity": cmd_unarchive_activity,
     "delete-archived-activity": cmd_delete_archived_activity,
     "get": cmd_get,
     "head": cmd_head,

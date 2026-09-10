@@ -291,6 +291,76 @@ class TestDraftSession(unittest.TestCase):
         self.assertEqual(session.activity_id, "")
         self.assertFalse(session.has_live_draft)
 
+    def test_unarchive_clears_delete_confirm_and_keeps_draft(self) -> None:
+        session = DraftSession(activity_id="A")
+        session.activity_name = "Gone Trail Map"
+        session.archived = True
+        session.archived_at = "2026-01-01T00:00:00Z"
+        session.published_revision = 2
+        session.published_summary = "Second trail checkpoint"
+        session.editor = "Gone durable draft must survive unarchive"
+        session.has_live_draft = True
+        session.dirty = True
+        session.draft_generation = 3
+        session.request_delete()
+        self.assertIsNotNone(session.delete_confirm)
+        session.unarchive()
+        self.assertIsNone(session.delete_confirm)
+        session.confirm_delete()
+        session.pump()
+        self.assertEqual(session.in_flight.kind, "unarchive")
+        self.assertEqual(session.in_flight.payload["activity_id"], "A")
+        session.complete_in_flight({"ok": True, "activity": {"id": "A", "archived_at": None}})
+        self.assertFalse(session.archived)
+        self.assertEqual(session.archived_at, "")
+        self.assertEqual(session.editor, "Gone durable draft must survive unarchive")
+        self.assertTrue(session.has_live_draft)
+        self.assertEqual(session.published_revision, 2)
+        self.assertIsNone(session.delete_confirm)
+        session.request_delete()
+        self.assertIsNone(session.delete_confirm)
+
+    def test_delete_in_flight_then_unarchive_does_not_resurrect(self) -> None:
+        session = DraftSession(activity_id="A")
+        session.activity_name = "Gone Trail Map"
+        session.archived = True
+        session.archived_at = "2026-01-01T00:00:00Z"
+        session.published_revision = 1
+        session.editor = "Draft still here"
+        session.has_live_draft = True
+        session.request_delete()
+        session.confirm_delete()
+        session.pump()
+        self.assertEqual(session.in_flight.kind, "delete-archived")
+        session.unarchive()
+        session.complete_in_flight(
+            {"ok": True, "deleted_activity_id": "A", "selected_activity_id": None}
+        )
+        self.assertEqual(session.activity_id, "")
+        self.assertFalse(session.has_live_draft)
+        session.pump()
+        self.assertEqual(session.in_flight.kind, "unarchive")
+        session.complete_in_flight({"ok": False, "error": "validation"})
+        self.assertEqual(session.activity_id, "")
+        self.assertFalse(session.archived)
+        self.assertEqual(session.editor, "")
+
+    def test_failed_unarchive_keeps_archived_draft(self) -> None:
+        session = DraftSession(activity_id="A")
+        session.archived = True
+        session.archived_at = "2026-01-01T00:00:00Z"
+        session.editor = "Keep this draft"
+        session.has_live_draft = True
+        session.dirty = True
+        session.unarchive()
+        session.pump()
+        session.complete_in_flight({"ok": False, "error": "io"})
+        self.assertTrue(session.archived)
+        self.assertEqual(session.archived_at, "2026-01-01T00:00:00Z")
+        self.assertEqual(session.editor, "Keep this draft")
+        self.assertTrue(session.has_live_draft)
+        self.assertEqual(session.last_error, "io")
+
 
 if __name__ == "__main__":
     unittest.main()

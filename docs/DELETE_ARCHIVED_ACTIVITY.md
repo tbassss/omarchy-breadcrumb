@@ -152,7 +152,8 @@ requests. Agents must not call `breadcrumb-store` for deletion.
 
 ## Limits
 
-- No Trash / undo / unarchive command.
+- No Trash / undo after permanent delete. Unarchive is a separate
+  reversible command documented in [UNARCHIVE_ACTIVITY.md](UNARCHIVE_ACTIVITY.md).
 - No bulk delete.
 - No public delete.
 - Native delete coverage is a component test (packaged child controls +
