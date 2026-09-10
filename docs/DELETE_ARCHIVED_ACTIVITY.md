@@ -1,11 +1,12 @@
 # Archived activity permanent deletion
 
-Post-v0.1.0 candidate. Owner product confirmation: archived-only
-permanent delete (not Trash), after a confirmation that names the exact
-activity and warns that its checkpoints, history, links, and draft are
-removed. Cancel is a no-op. This document freezes the internal store
-API from existing `breadcrumb-store` conventions **before**
-implementation.
+Merged on public main; included in local unpublished v0.2.0. Not a new
+GitHub release or directory listing until a separate release action.
+Owner product confirmation: archived-only permanent delete (not Trash),
+after a confirmation that names the exact activity and warns that its
+checkpoints, history, links, and draft are removed. Cancel is a no-op.
+The internal store API below was frozen from existing
+`breadcrumb-store` conventions before implementation.
 
 Not a public `bin/breadcrumb` operation. Not bulk delete. Not a new
 schema_meta version. Not unarchive. Not automatic expiration.
@@ -189,8 +190,10 @@ requests. Agents must not call `breadcrumb-store` for deletion.
   `stale_revision`).
 - `createActivity()` itself does not null `deleteConfirm`; clearing
   happens on later `applySnapshot` activity change.
-- Live plugin remains untouched by this candidate. No install, restart,
-  or publication.
+- Historical implementation-pass limit: that candidate left the then-live
+  plugin untouched (no install, restart, or publication in that pass).
+  Delete later merged on public main and was live-accepted; see labeled
+  historical `DELETE_LIVE_ACCEPTANCE.md`.
 - Rolling a store binary back to a build that does not check
   `expected_archive_generation` reintroduces same-second `archived_at`
   ABA. `schema_meta.version` stays `1` so that rollback can still open
@@ -259,7 +262,8 @@ version-1 migration.
 | Working-tree tar | `556504df322aa155cdcf46e056f3d7207830ba9793777cf835aed4b9bd307d8e` |
 | Live plugin / shell.json / qs pid | unchanged (584804 / `2bc54c753a5a529b02409e17c093640558341597aa38721cfd55eb97b168360f`) |
 
-Local-only. No live install, restart, push, merge, or version change.
+Historical ABA-repair pass: local-only at the time. No live install,
+restart, push, merge, or version change in that pass.
 
 ## AI credit
 

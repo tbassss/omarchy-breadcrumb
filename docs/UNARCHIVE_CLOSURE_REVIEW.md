@@ -1,5 +1,9 @@
 # Breadcrumb unarchive ABA repair — bounded closure
 
+**Historical independent closure record.** Unarchive later merged to public
+main. “No repo edits / no live writes / local-only branch” was true of
+that pass. Verdict, hashes, and findings are preserved as written.
+
 Verdict: **PASS**
 
 Scope: independent closure of the same-second `archived_at` ABA finding only, plus touched migration/compatibility and regressions. Unrelated noncritical nits not reopened. No repo edits. No live plugin/config/data writes, installs, restarts, or publish.

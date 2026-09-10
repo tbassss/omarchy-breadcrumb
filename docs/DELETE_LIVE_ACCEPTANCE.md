@@ -1,5 +1,10 @@
 # Archived deletion: owner live acceptance
 
+**Historical live-acceptance record.** Permanent delete later merged to
+public main (`#15`). “No branch push, PR, merge, version bump or new
+release” was true of that pass. Owner observations and rollback caution
+are preserved as written.
+
 Runtime reviewed at `cd8790f5cc3a74a17e75bf11edf963dbd0b80f15`; installed candidate `3e3c3f3511a7e8dc9af818e076b2e1575d3694d9` adds only the closure review record.
 
 ## Installation and rollback

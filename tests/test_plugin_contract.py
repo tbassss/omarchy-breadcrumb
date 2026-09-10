@@ -30,6 +30,7 @@ class TestPluginContract(unittest.TestCase):
         self.assertEqual(data["entryPoints"]["barWidget"], "Panel.qml")
         self.assertEqual(data["barWidget"]["defaultSection"], "right")
         self.assertEqual(data["license"], "MIT")
+        self.assertEqual(data["version"], "0.2.0")
         license_text = (ROOT / "LICENSE").read_text(encoding="utf-8")
         self.assertTrue(license_text.startswith("MIT License"))
         self.assertIn("Copyright (c) 2026 tbassss", license_text)
@@ -140,7 +141,7 @@ class TestPluginContract(unittest.TestCase):
         self.assertIn("stdin JSON", doc)
         self.assertIn("ssh -o BatchMode=yes tbasss@the-cave", doc)
         self.assertIn("not delivered", doc)
-        self.assertIn("installation gate", doc)
+        self.assertIn("not a Breadcrumb network service", doc)
 
     def test_editor_dirty_tracks_user_edits_not_construction_text_changed(self) -> None:
         """Source contract only. Native recreate evidence is tests/native/."""
@@ -458,6 +459,23 @@ class TestPluginContract(unittest.TestCase):
         self.assertIn("Creating, renaming, or archiving activities", doc)
         self.assertIn("Deleting activities", doc)
         self.assertIn("Unarchiving activities", doc)
+
+    def test_readme_and_changelog_match_unpublished_v020(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        self.assertIn(
+            "omarchy plugin add https://github.com/tbassss/omarchy-breadcrumb.git --enable",
+            readme,
+        )
+        self.assertIn("xdg-open", readme)
+        self.assertIn("MIT", readme)
+        self.assertIn("AI assistance", readme)
+        self.assertNotIn("Not a published release", readme)
+        self.assertNotIn("repository is private", readme)
+        self.assertNotIn("not directory-listed", readme)
+        self.assertIn("unpublished until a release action", changelog)
+        self.assertIn("archive_generation", changelog)
+        self.assertIn("0.2.0", changelog)
 
 
 if __name__ == "__main__":

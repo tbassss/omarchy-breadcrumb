@@ -1,5 +1,9 @@
 # Bread icon acceptance
 
+**Historical icon-import record** for first-candidate `Panel.qml`. Later
+public v0.1.0 and merged delete/unarchive changed other runtime bytes;
+this document’s hashes describe the icon-import SHA only.
+
 ## Problem and change
 
 The original disk glyph communicated saving but not Breadcrumb's identity. The owner requested bitten bread, then accepted a polished rounded outline with two crumbs after inspecting it on the live bar. This change imports those exact approved Panel.qml bytes; storage, keyboard/pointer actions and checkpoint behavior are unchanged. The Canvas uses the supported BarIconButton iconComponent slot and foreground/active colors rather than a fixed theme color.

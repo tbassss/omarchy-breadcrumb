@@ -1,5 +1,11 @@
 # Live install / rollback plan (owner approval required)
 
+**Historical first-candidate live-install plan (issue #8).** Later public
+v0.1.0 and merged delete/unarchive live installs supersede the “plugin
+absent / not installed” snapshot below. Do not treat this as current host
+state or as v0.2.0 release authorization. The gated steps and rollback
+commands are preserved as written.
+
 Do **not** execute this plan until the owner explicitly approves live
 installation. This document is read-only preparation. It does not authorize
 plugin enable, `shell.json` mutation, theme change, or `omarchy-restart-shell`.

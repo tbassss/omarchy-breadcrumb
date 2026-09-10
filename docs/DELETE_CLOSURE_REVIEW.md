@@ -1,5 +1,10 @@
 # Breadcrumb B1 closure recheck
 
+**Historical independent closure record.** Permanent delete later merged to
+public main. “No merge, push, install, restart, or public records from
+this pass” was true of that pass. Verdict, hashes, and findings are
+preserved as written.
+
 Independent read-only recheck of Compact destructive confirmation
 (B1), touched keyboard-modal safety, and regressions.
 

@@ -1,8 +1,8 @@
 # Unarchive activity
 
-Post-v0.1.0 candidate. Not a new GitHub release, directory listing, or
-live install. Public `bin/breadcrumb` remains `list` / `read` /
-`publish` only.
+Merged on public main; included in local unpublished v0.2.0. Not a new
+GitHub release or directory listing until a separate release action.
+Public `bin/breadcrumb` remains `list` / `read` / `publish` only.
 
 Owner asked to restore an archived activity to the active list. That is
 reversible and non-destructive. It is not history Restore and not
@@ -126,8 +126,10 @@ Commit SHA is the candidate identity after this documentation land.
 - Unarchive does not toggle `showArchived`. If that filter is on, the
   now-active activity still appears because `include_archived` lists
   active rows first.
-- This candidate does not install, restart the shell, push, merge, or
-  change the v0.1.0 version.
+- Historical implementation-pass limit: that candidate did not install,
+  restart the shell, push, merge, or change the v0.1.0 version. Unarchive
+  later merged on public main; local unpublished v0.2.0 only bumps the
+  root manifest.
 - Rolling a store binary back to a build that does not check
   `expected_archive_generation` reintroduces same-second `archived_at`
   ABA.

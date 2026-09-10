@@ -1,7 +1,13 @@
 # Implementation notes for issue #7
 
+**Historical issue #7 Compact/Expanded polish notes.** Header claims that
+the tree was “not a release, not installed” were true of that slice.
+Public v0.1.0 later shipped; delete/unarchive later merged. Technical
+API decisions below are preserved as written.
+
 Compact/Expanded polish and host-control compatibility. Not a release, not
-installed, not a live bar or dual-monitor/theme test.
+installed, not a live bar or dual-monitor/theme test at the time this
+slice landed.
 
 Technical decisions below were recorded after read-only inspection of installed
 Omarchy APIs on the-cave and before production UI changes. Issue #5 draft CAS,
