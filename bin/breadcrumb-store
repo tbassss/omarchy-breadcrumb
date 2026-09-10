@@ -171,7 +171,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 created_at TEXT NOT NULL,
-                archived_at TEXT
+                archived_at TEXT,
+                archive_generation INTEGER NOT NULL DEFAULT 0
             )
             """
         )
@@ -180,6 +181,10 @@ def init_schema(conn: sqlite3.Connection) -> None:
         }
         if "archived_at" not in activity_cols:
             conn.execute("ALTER TABLE activities ADD COLUMN archived_at TEXT")
+        if "archive_generation" not in activity_cols:
+            conn.execute(
+                "ALTER TABLE activities ADD COLUMN archive_generation INTEGER NOT NULL DEFAULT 0"
+            )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS checkpoints (
@@ -304,21 +309,31 @@ def cmd_create_activity(conn: sqlite3.Connection, payload: dict) -> None:
     except sqlite3.Error as exc:
         conn.execute("ROLLBACK")
         fail("io", f"Could not save the activity: {exc}")
-    ok({"activity": {"id": activity_id, "name": name, "created_at": created_at, "archived_at": None}})
+    ok(
+        {
+            "activity": {
+                "id": activity_id,
+                "name": name,
+                "created_at": created_at,
+                "archived_at": None,
+                "archive_generation": 0,
+            }
+        }
+    )
 
 
 def list_activity_rows(conn: sqlite3.Connection, *, include_archived: bool) -> list[sqlite3.Row]:
     if include_archived:
         return conn.execute(
             """
-            SELECT id, name, created_at, archived_at
+            SELECT id, name, created_at, archived_at, archive_generation
             FROM activities
             ORDER BY CASE WHEN archived_at IS NULL THEN 0 ELSE 1 END, rowid ASC
             """
         ).fetchall()
     return conn.execute(
         """
-        SELECT id, name, created_at, archived_at
+        SELECT id, name, created_at, archived_at, archive_generation
         FROM activities
         WHERE archived_at IS NULL
         ORDER BY rowid ASC
@@ -378,11 +393,39 @@ def cmd_archive_activity(conn: sqlite3.Connection, payload: dict) -> None:
             ok({"activity": activity_payload(activity)})
             return
         archived_at = utc_now()
-        conn.execute("UPDATE activities SET archived_at = ? WHERE id = ?", (archived_at, activity_id))
+        conn.execute(
+            """
+            UPDATE activities
+            SET archived_at = ?, archive_generation = archive_generation + 1
+            WHERE id = ? AND archived_at IS NULL
+            """,
+            (archived_at, activity_id),
+        )
         conn.execute("COMMIT")
     except sqlite3.Error as exc:
         conn.execute("ROLLBACK")
         fail("io", f"Could not archive the activity: {exc}")
+    row = load_activity(conn, activity_id)
+    ok({"activity": activity_payload(row)})
+
+
+def cmd_unarchive_activity(conn: sqlite3.Connection, payload: dict) -> None:
+    activity_id = require_activity_id(payload.get("activity_id"))
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        activity = load_activity(conn, activity_id)
+        if activity is None:
+            conn.execute("ROLLBACK")
+            fail("validation", "Unknown activity")
+        if activity["archived_at"] is None:
+            conn.execute("COMMIT")
+            ok({"activity": activity_payload(activity)})
+            return
+        conn.execute("UPDATE activities SET archived_at = NULL WHERE id = ?", (activity_id,))
+        conn.execute("COMMIT")
+    except sqlite3.Error as exc:
+        conn.execute("ROLLBACK")
+        fail("io", f"Could not unarchive the activity: {exc}")
     row = load_activity(conn, activity_id)
     ok({"activity": activity_payload(row)})
 
@@ -395,11 +438,22 @@ def expected_archived_at_value(value: object) -> str:
     return text
 
 
+def expected_archive_generation_value(value: object) -> int:
+    if value is None:
+        fail("validation", "expected_archive_generation is required")
+    if isinstance(value, bool) or not isinstance(value, int):
+        fail("validation", "expected_archive_generation must be an integer")
+    if value < 0:
+        fail("validation", "expected_archive_generation cannot be negative")
+    return value
+
+
 def cmd_delete_archived_activity(conn: sqlite3.Connection, payload: dict) -> None:
     activity_id = require_activity_id(payload.get("activity_id"))
     expected_revision = expected_revision_value(payload.get("expected_revision"))
     expected_draft_revision = expected_draft_revision_value(payload.get("expected_draft_revision"))
     expected_archived_at = expected_archived_at_value(payload.get("expected_archived_at"))
+    expected_archive_generation = expected_archive_generation_value(payload.get("expected_archive_generation"))
     expected_name = plain_text(payload.get("expected_name"), field="expected_name", required=True, max_len=80)
     assert expected_name is not None
     conn.execute("BEGIN IMMEDIATE")
@@ -413,6 +467,16 @@ def cmd_delete_archived_activity(conn: sqlite3.Connection, payload: dict) -> Non
             "stale_revision",
             "This activity is no longer in the archived state you confirmed.",
             {"current_archived_at": activity["archived_at"], "expected_archived_at": expected_archived_at},
+        )
+    current_generation = int(activity["archive_generation"] or 0)
+    if current_generation != expected_archive_generation:
+        fail(
+            "stale_revision",
+            "This activity is no longer in the archived state you confirmed.",
+            {
+                "current_archive_generation": current_generation,
+                "expected_archive_generation": expected_archive_generation,
+            },
         )
     if activity["name"] != expected_name:
         fail(
@@ -520,7 +584,7 @@ def cmd_ensure_activity(conn: sqlite3.Connection, payload: dict) -> None:
     conn.execute("BEGIN IMMEDIATE")
     try:
         existing = conn.execute(
-            "SELECT id, name, created_at, archived_at FROM activities ORDER BY rowid ASC LIMIT 1"
+            "SELECT id, name, created_at, archived_at, archive_generation FROM activities ORDER BY rowid ASC LIMIT 1"
         ).fetchone()
         if existing is not None:
             conn.execute("COMMIT")
@@ -542,20 +606,20 @@ def cmd_ensure_activity(conn: sqlite3.Connection, payload: dict) -> None:
 def load_activity(conn: sqlite3.Connection, activity_id: str | None) -> sqlite3.Row | None:
     if activity_id:
         return conn.execute(
-            "SELECT id, name, created_at, archived_at FROM activities WHERE id = ?",
+            "SELECT id, name, created_at, archived_at, archive_generation FROM activities WHERE id = ?",
             (activity_id,),
         ).fetchone()
     selected = pref(conn, "selected_activity_id", "")
     if selected:
         row = conn.execute(
-            "SELECT id, name, created_at, archived_at FROM activities WHERE id = ?",
+            "SELECT id, name, created_at, archived_at, archive_generation FROM activities WHERE id = ?",
             (selected,),
         ).fetchone()
         if row is not None:
             return row
     active = conn.execute(
         """
-        SELECT id, name, created_at, archived_at
+        SELECT id, name, created_at, archived_at, archive_generation
         FROM activities
         WHERE archived_at IS NULL
         ORDER BY rowid ASC
@@ -565,7 +629,7 @@ def load_activity(conn: sqlite3.Connection, activity_id: str | None) -> sqlite3.
     if active is not None:
         return active
     return conn.execute(
-        "SELECT id, name, created_at, archived_at FROM activities ORDER BY rowid ASC LIMIT 1"
+        "SELECT id, name, created_at, archived_at, archive_generation FROM activities ORDER BY rowid ASC LIMIT 1"
     ).fetchone()
 
 
@@ -577,12 +641,22 @@ def pref(conn: sqlite3.Connection, key: str, default: str) -> str:
 def activity_columns(row: sqlite3.Row) -> dict:
     keys = set(row.keys())
     archived = row["archived_at"] if "archived_at" in keys else None
+    generation = 0
+    if "archive_generation" in keys and row["archive_generation"] is not None:
+        generation = int(row["archive_generation"])
     return {
         "id": row["id"],
         "name": row["name"],
         "created_at": row["created_at"],
         "archived_at": archived,
+        "archive_generation": generation,
     }
+
+
+def public_activity_columns(row: sqlite3.Row) -> dict:
+    body = activity_columns(row)
+    body.pop("archive_generation", None)
+    return body
 
 
 def activity_payload(row: sqlite3.Row) -> dict:
@@ -1308,6 +1382,7 @@ COMMANDS = {
     "list-activities": cmd_list_activities,
     "rename-activity": cmd_rename_activity,
     "archive-activity": cmd_archive_activity,
+    "unarchive-activity": cmd_unarchive_activity,
     "delete-archived-activity": cmd_delete_archived_activity,
     "get": cmd_get,
     "head": cmd_head,

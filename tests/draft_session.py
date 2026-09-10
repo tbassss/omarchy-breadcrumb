@@ -51,6 +51,7 @@ class DraftSession:
         self.activity_name = ""
         self.archived = False
         self.archived_at = ""
+        self.archive_generation = 0
         self.last_error = ""
 
     def type_text(self, text: str) -> None:
@@ -113,6 +114,8 @@ class DraftSession:
             self._ack_publish(op, result)
         elif op.kind == "delete-archived":
             self._ack_delete(op, result)
+        elif op.kind == "unarchive":
+            self._ack_unarchive(op, result)
         self.pump()
         self._maybe_finish_nav()
 
@@ -203,6 +206,7 @@ class DraftSession:
             self.activity_id = str(selected)
             self.archived = False
             self.archived_at = ""
+            self.archive_generation = 0
             self.activity_name = ""
             self.has_live_draft = False
             self.dirty = False
@@ -216,6 +220,7 @@ class DraftSession:
         self.activity_id = ""
         self.archived = False
         self.archived_at = ""
+        self.archive_generation = 0
         self.activity_name = ""
         self.has_live_draft = False
         self.dirty = False
@@ -225,6 +230,17 @@ class DraftSession:
         self.draft_generation = 0
         self.published_revision = 0
         self.published_summary = ""
+
+    def _ack_unarchive(self, op: Op, result: dict) -> None:
+        if not result.get("ok"):
+            self.draft_status = "error"
+            self.last_error = str(result.get("error") or "error")
+            return
+        if op.activity_id != self.activity_id:
+            return
+        self.archived = False
+        self.archived_at = ""
+        self.delete_confirm = None
 
     def save_checkpoint(self) -> None:
         self.enqueue(Op(kind="publish", activity_id=self.activity_id, edit_sequence=self.edit_sequence, payload={}))
@@ -287,6 +303,7 @@ class DraftSession:
             "activity_id": self.activity_id,
             "expected_name": self.activity_name,
             "expected_archived_at": self.archived_at,
+            "expected_archive_generation": self.archive_generation,
             "expected_revision": self.published_revision,
             "expected_draft_revision": self.draft_generation,
         }
@@ -314,7 +331,19 @@ class DraftSession:
                     "expected_revision": frozen["expected_revision"],
                     "expected_draft_revision": frozen["expected_draft_revision"],
                     "expected_archived_at": frozen["expected_archived_at"],
+                    "expected_archive_generation": frozen["expected_archive_generation"],
                     "expected_name": frozen["expected_name"],
                 },
+            )
+        )
+
+    def unarchive(self) -> None:
+        self.delete_confirm = None
+        self.enqueue(
+            Op(
+                kind="unarchive",
+                activity_id=self.activity_id,
+                edit_sequence=self.edit_sequence,
+                payload={"activity_id": self.activity_id},
             )
         )

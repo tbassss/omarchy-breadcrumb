@@ -1,6 +1,6 @@
 # Breadcrumb — Product Spec
 
-Status: Product behavior approved by Tyler. Implementation slices #3–#7 shipped in public v0.1.0. Archived-activity permanent deletion is an explicitly approved post-v0.1.0 candidate in this branch.
+Status: Product behavior approved by Tyler. Implementation slices #3–#7 shipped in public v0.1.0. Archived-activity permanent deletion and unarchive are explicitly approved post-v0.1.0 candidates in this branch.
 Stage: Public repository; v0.1.0 published. This candidate is not a new GitHub release or directory listing. Remaining first-release evidence is in RELEASE_PREP.md.
 Mainframe Build Tracker: None.
 
@@ -24,7 +24,7 @@ WGU, Coach, and Life are Tyler's examples, not built-in categories. Public docum
 
 ### Activity navigation
 
-Users can create and rename activities, switch among them, and archive finished activities without erasing checkpoints. An archived activity can be permanently deleted only after a confirmation that names that activity and warns that its checkpoints, history, links, and draft will be removed. Cancel leaves the activity unchanged. There is no bulk delete. A compact activity selector and current checkpoint must remain usable with long names and more activities than fit across one row. Approved layout: one interface with Compact and Expanded views sharing the same activity and checkpoint state. Default to Compact on first use and remember the last chosen view. Compact uses an activity picker and displays the status summary, next step, timestamp, and reported author. Expanded uses an activity sidebar and provides context, links, editing, and history. Editing and history are implemented once, in Expanded. Expand/Collapse must preserve the selected activity and manual draft; collapsing an editor shows the published checkpoint, not an unsaved draft. On narrow screens, adapt the layout without losing the distinction between glance and editing views.
+Users can create and rename activities, switch among them, and archive finished activities without erasing checkpoints. An archived activity can be returned to the active list with one Unarchive action; that is reversible and does not require confirmation. Unarchive keeps the same stable activity, current checkpoint, history, links, and any saved or in-memory draft. It does not append a checkpoint and is not history Restore. An archived activity can be permanently deleted only after a confirmation that names that activity and warns that its checkpoints, history, links, and draft will be removed. Cancel leaves the activity unchanged. Delete is hidden for an active activity. There is no bulk delete. A compact activity selector and current checkpoint must remain usable with long names and more activities than fit across one row. Approved layout: one interface with Compact and Expanded views sharing the same activity and checkpoint state. Default to Compact on first use and remember the last chosen view. Compact uses an activity picker and displays the status summary, next step, timestamp, and reported author. Expanded uses an activity sidebar and provides context, links, editing, and history. Editing and history are implemented once, in Expanded. Expand/Collapse must preserve the selected activity and manual draft; collapsing an editor shows the published checkpoint, not an unsaved draft. On narrow screens, adapt the layout without losing the distinction between glance and editing views.
 
 ### Current checkpoint
 
@@ -89,6 +89,7 @@ For Tyler, use his existing authorized SSH route to invoke the local command on 
 9. Verify keyboard operation, long content, empty states, theme changes, popup placement, and both monitors on a supported Omarchy build. Do not claim compatibility with configurations not tested.
 10. Install from the documented source layout, use it manually without an agent, and remove it without deleting user checkpoints.
 11. Archive an activity, confirm permanent delete by name, and verify its checkpoints, history, links, and draft are gone while a neighbor activity is unchanged. Cancel leaves the archived activity intact.
+12. Archive an activity, Unarchive it in one click, and verify the same stable activity returns to the active list with its current checkpoint, history, links, and draft intact. Unarchive does not confirm, does not append a checkpoint, and does not resurrect a deleted activity.
 
 ## Non-goals for the first release
 

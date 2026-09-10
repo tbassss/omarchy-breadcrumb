@@ -8,7 +8,13 @@ API from existing `breadcrumb-store` conventions **before**
 implementation.
 
 Not a public `bin/breadcrumb` operation. Not bulk delete. Not a new
-schema version. Not unarchive. Not automatic expiration.
+schema_meta version. Not unarchive. Not automatic expiration.
+
+Additive column `activities.archive_generation INTEGER NOT NULL DEFAULT 0`
+is applied crash-safely in the existing `BEGIN IMMEDIATE` `init_schema`
+transaction (`CREATE TABLE` for new stores, `ALTER TABLE` when the
+column is missing). `schema_meta.version` remains `1`. Missing
+`expected_archive_generation` is `validation` and does not delete.
 
 ## Problem
 
@@ -37,6 +43,7 @@ opens confirmation, not when the write is later dequeued.
 | `expected_revision` | Current published checkpoint revision, `0` if none | `publish` CAS |
 | `expected_draft_revision` | Durable per-activity draft generation, including a discard tombstone; `0` if no drafts row | `save-draft` / `discard-draft` |
 | `expected_archived_at` | Exact `archived_at` timestamp observed at confirm (`…Z`) | activity metadata |
+| `expected_archive_generation` | Monotonic per-activity archive generation observed at confirm; `0` if never archived | activity metadata, retained across unarchive |
 | `expected_name` | Exact activity name shown in the confirmation | activity metadata |
 
 No `force`, no list of ids, no `include_archived`, no public envelope.
@@ -46,12 +53,26 @@ No `force`, no list of ids, no `include_archived`, no public envelope.
 1. Unknown `activity_id` → `validation` / “Unknown activity.” No write.
 2. `archived_at` is null → `validation` / “Only archived activities can be deleted.” No write.
 3. `archived_at != expected_archived_at` → `stale_revision` (concurrent unarchive/re-archive). Extra: `current_archived_at`, `expected_archived_at`.
-4. `name != expected_name` → `stale_revision` (renamed after confirm). Extra: `current_name`, `expected_name`.
-5. Latest checkpoint revision ≠ `expected_revision` → `stale_revision` (concurrent publication). Extra: `current_revision`, `expected_revision`.
-6. `current_draft_revision` ≠ `expected_draft_revision` → `stale_revision` (concurrent draft save/discard). Extra: `current_draft_revision`, `expected_draft_revision`.
+4. `archive_generation != expected_archive_generation` → `stale_revision` (same-second or clock-rollback unarchive/re-archive). Extra: `current_archive_generation`, `expected_archive_generation`.
+5. `name != expected_name` → `stale_revision` (renamed after confirm). Extra: `current_name`, `expected_name`.
+6. Latest checkpoint revision ≠ `expected_revision` → `stale_revision` (concurrent publication). Extra: `current_revision`, `expected_revision`.
+7. `current_draft_revision` ≠ `expected_draft_revision` → `stale_revision` (concurrent draft save/discard). Extra: `current_draft_revision`, `expected_draft_revision`.
 
 `current_draft_revision` is `0` when no `drafts` row exists, otherwise
 `drafts.revision` (live draft or tombstone).
+
+`archive_generation` starts at `0`. Each successful archive of an
+active activity increments it by one in the same `UPDATE` that sets
+`archived_at`. Already-archived archive is still a no-op (generation
+unchanged). Unarchive clears `archived_at` and **retains** generation.
+Wall-clock rollback and same-second re-archive therefore cannot reuse
+a prior delete consent identity. Migrated rows without the column
+receive `0`; after one unarchive/re-archive cycle their generation is
+`1` and a generation-`0` confirmation is `stale_revision`.
+
+Rolling a store binary back to a build that does not check
+`expected_archive_generation` reintroduces same-second `archived_at`
+ABA. New public `list`/`read` objects still omit `archive_generation`.
 
 ### Atomic delete
 
@@ -136,8 +157,11 @@ requests. Agents must not call `breadcrumb-store` for deletion.
 
 - Store: actual `breadcrumb-store` process tests for archived-only
   delete, child/parent cascade, neighbor isolation, stale
-  revision/draft/archive/name, last-activity empty pref, failed-delete
-  rollback, and post-delete autosave non-resurrection.
+  revision/draft/archive/name/archive-generation, same-second and
+  clock-rollback unarchive/re-archive ABA, second-instance current
+  confirmation, concurrent archive/delete/unarchive serial outcomes,
+  additive `archive_generation` migration, last-activity empty pref,
+  failed-delete rollback, and post-delete autosave non-resurrection.
 - Scheduler: `tests/draft_session.py` cancellation, target switch,
   last activity, stale confirmation, failed delete preserving draft,
   queued autosave after delete.
@@ -147,12 +171,14 @@ requests. Agents must not call `breadcrumb-store` for deletion.
   HOME/XDG, packaged controls, stub KeyboardPanel/host Panel). Covers
   Compact-not-delete, collapse cancel, no Compact execution, no
   confirm resurrection, keyboard default Cancel, named warning, Cancel
-  no-op, stale publish, selection fallback, last-entity empty. The
+  no-op, stale publish, same-second unarchive/re-archive retained
+  confirmation, selection fallback, last-entity empty. The
   prior 96-step Compact/Expanded harness remains v0.1.0 evidence.
 
 ## Limits
 
-- No Trash / undo / unarchive command.
+- No Trash / undo after permanent delete. Unarchive is a separate
+  reversible command documented in [UNARCHIVE_ACTIVITY.md](UNARCHIVE_ACTIVITY.md).
 - No bulk delete.
 - No public delete.
 - Native delete coverage is a component test (packaged child controls +
@@ -165,6 +191,10 @@ requests. Agents must not call `breadcrumb-store` for deletion.
   happens on later `applySnapshot` activity change.
 - Live plugin remains untouched by this candidate. No install, restart,
   or publication.
+- Rolling a store binary back to a build that does not check
+  `expected_archive_generation` reintroduces same-second `archived_at`
+  ABA. `schema_meta.version` stays `1` so that rollback can still open
+  the database.
 
 ## Independent review history
 
@@ -206,6 +236,30 @@ Cave evidence (disposable, not committed):
 `/tmp/breadcrumb-delete-repair/{red,green2,old-native}` and local copy
 `/tmp/breadcrumb-delete-repair-evidence/`. Independent review remains
 `/tmp/breadcrumb-delete-review.md`.
+
+## Archive-generation ABA repair
+
+Parent unarchive candidate `25e627239b97d1ab53751fe305a2d1dd02d68db4`
+passed review except same-second `archived_at` ABA: an old delete
+payload still deleted after unarchive/re-archive in the same second.
+This pass adds monotonic `archive_generation` retained across
+unarchive, required on delete confirmation, additive `schema_meta`
+version-1 migration.
+
+| Item | Value |
+|---|---|
+| Parent candidate | `25e627239b97d1ab53751fe305a2d1dd02d68db4` |
+| Python RED | old delete bytes after same-second cycle returned `ok:true` |
+| Python GREEN | 100 tests OK (`unittest discover -s tests`) |
+| Native delete GREEN | `/tmp/breadcrumb-delete-gen-UgdH`; step 33; `staleCycleRejected=true`; frozen generation 1; current confirmation after Reload deleted |
+| Native unarchive GREEN | `/tmp/breadcrumb-unarchive-gen-9r91`; step 18; selection/revision/draft preserved |
+| Workdir `Panel.qml` | `df45cc350a7ffa5490246919361886c98b1ab3b7d1af47289c49826b4febdc99` |
+| Workdir `bin/breadcrumb-store` | `b0fc0b77c82f71fb85644ce05a30081ebff8933a6d52bae3c43419c75ef80504` |
+| Workdir `bin/breadcrumb` | `e39e8b17c4717ee4aa49511bfce4122b77ec32f65ca571a671cf7f61245711af` |
+| Working-tree tar | `556504df322aa155cdcf46e056f3d7207830ba9793777cf835aed4b9bd307d8e` |
+| Live plugin / shell.json / qs pid | unchanged (584804 / `2bc54c753a5a529b02409e17c093640558341597aa38721cfd55eb97b168360f`) |
+
+Local-only. No live install, restart, push, merge, or version change.
 
 ## AI credit
 

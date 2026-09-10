@@ -185,6 +185,8 @@ Panel {
       root.conflictPrompt = false
     if (activityChanged)
       root.deleteConfirm = null
+    else if (root.deleteConfirm && (!root.activity || !root.activity.archived_at || String(root.activity.id) !== String(root.deleteConfirm.activity_id)))
+      root.deleteConfirm = null
     if (activityChanged || (!root.pendingAutosave && !root.dirty))
       hydrateEditorFromSnapshot(body)
     root.noteExternalPublication(body)
@@ -553,6 +555,14 @@ Panel {
     runStore("archive-activity", { activity_id: target })
   }
 
+  function unarchiveActivity(id) {
+    var target = id || (root.activity ? root.activity.id : "")
+    if (!target)
+      return
+    root.deleteConfirm = null
+    runStore("unarchive-activity", { activity_id: target })
+  }
+
   function requestDeleteArchived() {
     if (root.busy || !root.expanded || !root.hasActivity || !root.activity.archived_at)
       return
@@ -560,6 +570,7 @@ Panel {
       activity_id: String(root.activity.id),
       expected_name: String(root.activity.name || ""),
       expected_archived_at: String(root.activity.archived_at),
+      expected_archive_generation: Number(root.activity.archive_generation || 0),
       expected_revision: root.revision,
       expected_draft_revision: root.draftRevision
     }
@@ -587,6 +598,7 @@ Panel {
       expected_revision: frozen.expected_revision,
       expected_draft_revision: frozen.expected_draft_revision,
       expected_archived_at: frozen.expected_archived_at,
+      expected_archive_generation: frozen.expected_archive_generation,
       expected_name: frozen.expected_name
     }, { activityId: frozen.activity_id })
   }
@@ -743,6 +755,8 @@ Panel {
     }
     if (deleteRequestButton && deleteRequestButton.visible && deleteRequestButton.focusable)
       t.push(deleteRequestButton)
+    if (unarchiveButton && unarchiveButton.visible && unarchiveButton.focusable)
+      t.push(unarchiveButton)
     return t
   }
 
@@ -835,6 +849,11 @@ Panel {
     if (item === deleteRequestButton) {
       if (!root.busy && root.expanded)
         root.requestDeleteArchived()
+      return
+    }
+    if (item === unarchiveButton) {
+      if (!root.busy && root.expanded && root.activity && root.activity.archived_at)
+        root.unarchiveActivity(root.activity.id)
       return
     }
     if (item === activityPicker && activityPicker.toggle) {
@@ -1003,7 +1022,9 @@ Panel {
       Qt.callLater(function() { root.refresh() })
       return
     }
-    if (action === "rename-activity" || action === "archive-activity") {
+    if (action === "rename-activity" || action === "archive-activity" || action === "unarchive-activity") {
+      if (action === "unarchive-activity")
+        root.deleteConfirm = null
       if (body.activity && root.activity && body.activity.id === root.activity.id)
         root.activity = body.activity
       Qt.callLater(function() { root.refresh() })
@@ -1604,14 +1625,30 @@ Panel {
               onClicked: { if (!root.busy && root.renameName.trim().length > 0) root.renameActivity() }
             }
             Button {
+              id: archiveButton
+              objectName: "archiveButton"
+              visible: !!(root.activity && !root.activity.archived_at)
               text: "Archive activity"
-              focusable: (!root.busy && root.hasActivity)
-              opacity: (!root.busy && root.hasActivity) ? 1 : 0.45
+              focusable: (!root.busy && root.hasActivity && !!(root.activity && !root.activity.archived_at))
+              opacity: (!root.busy && root.hasActivity && !!(root.activity && !root.activity.archived_at)) ? 1 : 0.45
               foreground: root.fg
               fontFamily: root.fontFamily
               fontSize: Style.font.bodySmall
               bordered: true
-              onClicked: { if (!root.busy && root.hasActivity) root.archiveActivity(root.activity.id) }
+              onClicked: { if (!root.busy && root.hasActivity && root.activity && !root.activity.archived_at) root.archiveActivity(root.activity.id) }
+            }
+            Button {
+              id: unarchiveButton
+              objectName: "unarchiveButton"
+              visible: !!(root.activity && root.activity.archived_at)
+              text: "Unarchive"
+              focusable: (!root.busy && !!(root.activity && root.activity.archived_at))
+              opacity: (!root.busy && !!(root.activity && root.activity.archived_at)) ? 1 : 0.45
+              foreground: root.fg
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              bordered: true
+              onClicked: { if (!root.busy && root.expanded && root.activity && root.activity.archived_at) root.unarchiveActivity(root.activity.id) }
             }
             Button {
               id: deleteRequestButton

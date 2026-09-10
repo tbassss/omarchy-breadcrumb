@@ -211,7 +211,7 @@ def public_list(payload: dict) -> None:
         activities = []
         for row in rows:
             current = store.latest_checkpoint(conn, row["id"])
-            item = store.activity_payload(row)
+            item = store.public_activity_columns(row)
             item["revision"] = int(current["revision"]) if current is not None else 0
             item["summary"] = current["summary"] if current is not None else None
             activities.append(item)
@@ -243,7 +243,7 @@ def public_read(payload: dict) -> None:
             "read",
             {
                 "ok": True,
-                "activity": store.activity_payload(activity),
+                "activity": store.public_activity_columns(activity),
                 "revision": current["revision"] if current is not None else 0,
                 "current": current,
                 "has_live_draft": has_live_draft,
