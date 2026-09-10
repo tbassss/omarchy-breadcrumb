@@ -2,6 +2,10 @@
 
 A save point for your work — an Omarchy plugin for named activity checkpoints, written by you or your agent.
 
+![Breadcrumb Compact and Expanded views with fictional example notes](preview.png)
+
+*Actual rendered UI, composed side by side. [Image provenance](docs/PREVIEW.md).*
+
 Click the bread icon on the bar to see where you left off: status, next step, and optional context and links. Save a checkpoint when you mean it. An optional local command lets an existing agent leave the same kind of handoff.
 
 License: MIT. Copyright (c) 2026 tbassss. See [LICENSE](LICENSE).
