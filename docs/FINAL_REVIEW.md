@@ -1,5 +1,10 @@
 # Breadcrumb final candidate review
 
+**Historical first-candidate source review.** Contemporaneous “private repo”
+and “0.1.0 not shipped” claims below are not current status. Public v0.1.0
+later shipped; delete/unarchive later merged. Review identity, hashes, test
+counts, and defect notes are preserved as written.
+
 Independent, read-only, AI-assisted review. No merge, publish, listing, live mutation, or repo edit. Persistence/CAS/draft spec is not reopened: store and public CLI bytes are unchanged from the already-reviewed base, and this delta contains no new persistence defect.
 
 ## Identity

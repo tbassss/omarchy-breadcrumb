@@ -235,16 +235,16 @@ ssh -o BatchMode=yes tbasss@the-cave \
 If the host is unreachable, SSH fails and Breadcrumb does **not** queue the
 update. Treat that as “not delivered”, not as a successful publish.
 
-A real SSH test of a **live installed** plugin requires the owner installation gate
-(issue #8). Isolated `/tmp` `HOME`/`XDG` offscreen component tests
-are not that gate and must not be described as a live installed SSH workflow.
+SSH is the user's existing access, not a Breadcrumb network service.
+Isolated `/tmp` `HOME`/`XDG` offscreen component tests are not a live
+installed SSH workflow.
 
-After an approved live install the command path is
+After install the command path is
 `~/.config/omarchy/plugins/tbassss.breadcrumb/bin/breadcrumb`. Data remains
 in `${XDG_DATA_HOME:-$HOME/.local/share}/breadcrumb/` and is not removed
 by `omarchy plugin remove`.
 
 ## Out of scope
 
-Live install, restart, merge, public visibility, listing submission, and
-release publication remain unapproved. See `docs/RELEASE_PREP.md`.
+GitHub release publication and directory listing are separate from this
+command interface. See [CHANGELOG.md](../CHANGELOG.md).

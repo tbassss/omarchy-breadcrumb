@@ -1,5 +1,11 @@
 # Issue #8 release-candidate verification
 
+**Historical first-candidate record.** Public repository and v0.1.0 later
+shipped; delete/unarchive later merged on main. Visibility, “not published”,
+and “repository remains private” claims below are contemporaneous with
+issue #8, not current project status. Do not use historical hashes as a
+reinstall target. Runtime hashes and live receipts are preserved as written.
+
 ## Current status (supersedes historical prep below)
 
 Installed and independently source-reviewed runtime candidate:

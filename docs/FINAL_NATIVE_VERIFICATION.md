@@ -1,5 +1,9 @@
 # Breadcrumb final isolated native verification
 
+**Historical isolated native rerun** of the first-candidate runtime.
+Not current v0.2.0 evidence. Identity, hashes, and step counts are
+preserved as written.
+
 Executed 2026-09-09T15:47:34-07:00 on the-cave. Not a live bar install. No repository edits, no live plugin/data/config mutation, no restart, no real launcher, no publish.
 
 ## Candidate identity

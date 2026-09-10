@@ -1,7 +1,7 @@
 # Breadcrumb — Product Spec
 
-Status: Product behavior approved by Tyler. Implementation slices #3–#7 shipped in public v0.1.0. Archived-activity permanent deletion and unarchive are explicitly approved post-v0.1.0 candidates in this branch.
-Stage: Public repository; v0.1.0 published. This candidate is not a new GitHub release or directory listing. Remaining first-release evidence is in RELEASE_PREP.md.
+Status: Product behavior approved by Tyler. Implementation slices #3–#7 shipped in public v0.1.0. Archived-activity permanent deletion and unarchive are merged on public main and included in local unpublished v0.2.0.
+Stage: Public repository. GitHub release 0.2.0 and directory listing are unpublished until a separate release action. First-candidate live/review receipts in RELEASE_PREP.md are historical, not current install status.
 Mainframe Build Tracker: None.
 
 ## Purpose
@@ -97,7 +97,9 @@ Cloud accounts/sync, embedded AI, automatic GitHub polling, task assignment, cal
 
 No dependency on Tyler's custom Tray repair. Use supported Omarchy plugin interfaces; do not patch package-managed shell files as an installation prerequisite.
 
-## Delivery sequence after spec approval
+## Historical delivery sequence after spec approval
+
+The numbered plan below is the original private-development sequence. The repository is now public and v0.1.0 shipped. Remaining publication, listing, and live-install items stay separate approvals; do not read “preserve private visibility” as current status.
 
 1. Create the proposed private repository tbassss/omarchy-breadcrumb after checking availability and authenticated permissions. Explicitly preserve private visibility. Add development README, this approved spec, contributor/agent rules, issue and PR templates, and source-data exclusions. MIT license, owner-approved 2026-09-09; see LICENSE. Public visibility remains a separate approval.
 2. Prepare a small visual prototype to settle the activity selector and at-a-glance checkpoint hierarchy before substantial UI implementation.
