@@ -403,7 +403,7 @@ class TestPublicCommand(unittest.TestCase):
         self.assertEqual(summaries, ["First checkpoint"])
 
     def test_public_cli_rejects_draft_ops(self) -> None:
-        for op in ("save-draft", "discard-draft", "ensure-activity", "create-activity"):
+        for op in ("save-draft", "discard-draft", "ensure-activity", "create-activity", "delete-archived-activity", "delete"):
             proc = run_command(self.data_dir, [op], {"v": 1, "op": op})
             self.assertEqual(proc.returncode, 2, proc.stdout)
             self.assertEqual(decode_proc(proc)["error"], "invalid_request")

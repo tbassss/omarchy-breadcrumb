@@ -335,6 +335,44 @@ class TestPluginContract(unittest.TestCase):
         self.assertIn("draftBaseRevision", qml)
         self.assertNotIn("consume_draft_revision", qml.split("function sendOp")[0])
 
+    def test_archived_delete_confirmation_is_frozen_and_not_bulk(self) -> None:
+        qml = PANEL.read_text(encoding="utf-8")
+        self.assertIn("delete-archived-activity", qml)
+        self.assertIn("function requestDeleteArchived(", qml)
+        self.assertIn("function cancelDeleteArchived(", qml)
+        self.assertIn("function confirmDeleteArchived(", qml)
+        self.assertIn("deleteConfirm", qml)
+        self.assertIn("expected_archived_at", qml)
+        self.assertIn("expected_draft_revision", qml)
+        self.assertIn("expected_revision", qml)
+        self.assertIn("expected_name", qml)
+        self.assertIn("Delete permanently", qml)
+        self.assertIn("checkpoints, history, links, and the draft", qml)
+        self.assertIn("root.activity.archived_at", qml)
+        self.assertNotIn("delete-activities", qml)
+        self.assertNotIn("bulk-delete", qml)
+        send_idx = qml.index("function sendOp(")
+        send_chunk = qml[send_idx : send_idx + 2200]
+        self.assertEqual(send_chunk.find("delete-archived-activity"), -1)
+        confirm_idx = qml.index("function confirmDeleteArchived(")
+        confirm_chunk = qml[confirm_idx : confirm_idx + 900]
+        self.assertIn("dropUnsentAutosaves", confirm_chunk)
+        self.assertNotIn("root.revision", confirm_chunk)
+        self.assertIn("frozen.expected_revision", confirm_chunk)
+        handler_idx = qml.index("function handleStoreResult(")
+        handler = qml[handler_idx : handler_idx + 4500]
+        self.assertIn('action === "delete-archived-activity"', handler)
+        switch_idx = qml.index("function doSwitch(")
+        switch_chunk = qml[switch_idx : switch_idx + 400]
+        self.assertIn("deleteConfirm", switch_chunk)
+
+    def test_public_command_docs_exclude_delete(self) -> None:
+        command = (ROOT / "bin" / "breadcrumb").read_text(encoding="utf-8")
+        doc = (ROOT / "docs" / "COMMAND.md").read_text(encoding="utf-8")
+        self.assertNotIn("delete-archived-activity", command)
+        self.assertIn("Creating, renaming, or archiving activities", doc)
+        self.assertIn("Deleting activities", doc)
+
 
 if __name__ == "__main__":
     unittest.main()

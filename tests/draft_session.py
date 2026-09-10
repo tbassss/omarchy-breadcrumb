@@ -47,6 +47,11 @@ class DraftSession:
         self.nav_blocked_reason = ""
         self.compensating_discards: list[Any] = []
         self.acked_sequences: list[int] = []
+        self.delete_confirm: dict | None = None
+        self.activity_name = ""
+        self.archived = False
+        self.archived_at = ""
+        self.last_error = ""
 
     def type_text(self, text: str) -> None:
         if not self.has_live_draft and not self.dirty:
@@ -106,6 +111,8 @@ class DraftSession:
             self._ack_discard(op, result)
         elif op.kind in ("publish", "resolve-publish"):
             self._ack_publish(op, result)
+        elif op.kind == "delete-archived":
+            self._ack_delete(op, result)
         self.pump()
         self._maybe_finish_nav()
 
@@ -181,6 +188,44 @@ class DraftSession:
         self.draft_status = ""
         self.draft_base_revision = self.published_revision
 
+    def _ack_delete(self, op: Op, result: dict) -> None:
+        if not result.get("ok"):
+            self.draft_status = "error"
+            self.last_error = str(result.get("error") or "error")
+            return
+        self.queue = [
+            item for item in self.queue
+            if not (item.kind == "autosave" and item.activity_id == op.activity_id)
+        ]
+        self.delete_confirm = None
+        selected = result.get("selected_activity_id")
+        if selected:
+            self.activity_id = str(selected)
+            self.archived = False
+            self.archived_at = ""
+            self.activity_name = ""
+            self.has_live_draft = False
+            self.dirty = False
+            self.pending_autosave = False
+            self.editor = ""
+            self.draft_status = ""
+            self.draft_generation = 0
+            self.published_revision = 0
+            self.published_summary = ""
+            return
+        self.activity_id = ""
+        self.archived = False
+        self.archived_at = ""
+        self.activity_name = ""
+        self.has_live_draft = False
+        self.dirty = False
+        self.pending_autosave = False
+        self.editor = ""
+        self.draft_status = ""
+        self.draft_generation = 0
+        self.published_revision = 0
+        self.published_summary = ""
+
     def save_checkpoint(self) -> None:
         self.enqueue(Op(kind="publish", activity_id=self.activity_id, edit_sequence=self.edit_sequence, payload={}))
 
@@ -195,6 +240,7 @@ class DraftSession:
         self.enqueue(Op(kind="discard", activity_id=self.activity_id, edit_sequence=self.edit_sequence, payload={}))
 
     def navigate(self, activity_id: str) -> None:
+        self.delete_confirm = None
         if activity_id == self.activity_id:
             return
         if self._needs_flush():
@@ -233,3 +279,42 @@ class DraftSession:
         self.activity_id = self.nav_deferred_to
         self.nav_deferred_to = None
         self.nav_blocked_reason = ""
+
+    def request_delete(self) -> None:
+        if not self.archived:
+            return
+        self.delete_confirm = {
+            "activity_id": self.activity_id,
+            "expected_name": self.activity_name,
+            "expected_archived_at": self.archived_at,
+            "expected_revision": self.published_revision,
+            "expected_draft_revision": self.draft_generation,
+        }
+
+    def cancel_delete(self) -> None:
+        self.delete_confirm = None
+
+    def confirm_delete(self) -> None:
+        frozen = self.delete_confirm
+        if not frozen:
+            return
+        self.delete_confirm = None
+        target = str(frozen["activity_id"])
+        self.queue = [
+            op for op in self.queue
+            if not (op.kind == "autosave" and op.activity_id == target)
+        ]
+        self.enqueue(
+            Op(
+                kind="delete-archived",
+                activity_id=target,
+                edit_sequence=self.edit_sequence,
+                payload={
+                    "activity_id": target,
+                    "expected_revision": frozen["expected_revision"],
+                    "expected_draft_revision": frozen["expected_draft_revision"],
+                    "expected_archived_at": frozen["expected_archived_at"],
+                    "expected_name": frozen["expected_name"],
+                },
+            )
+        )

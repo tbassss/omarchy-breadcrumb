@@ -33,6 +33,7 @@ Panel {
   property int autosaveGeneration: 0
   property bool pendingAutosave: false
   property bool conflictPrompt: false
+  property var deleteConfirm: null
   property int observedRevision: 0
   property int editSequence: 0
   property int requestIdCounter: 0
@@ -182,6 +183,8 @@ Panel {
     var activityChanged = newId !== previousId
     if (activityChanged)
       root.conflictPrompt = false
+    if (activityChanged)
+      root.deleteConfirm = null
     if (activityChanged || (!root.pendingAutosave && !root.dirty))
       hydrateEditorFromSnapshot(body)
     root.noteExternalPublication(body)
@@ -504,6 +507,7 @@ Panel {
   }
 
   function doSwitch(id) {
+    root.deleteConfirm = null
     autosaveTimer.stop()
     root.pendingSwitchAfterDraft = ""
     root.navBlockedReason = ""
@@ -545,7 +549,39 @@ Panel {
     var target = id || (root.activity ? root.activity.id : "")
     if (!target)
       return
+    root.deleteConfirm = null
     runStore("archive-activity", { activity_id: target })
+  }
+
+  function requestDeleteArchived() {
+    if (root.busy || !root.hasActivity || !root.activity.archived_at)
+      return
+    root.deleteConfirm = {
+      activity_id: String(root.activity.id),
+      expected_name: String(root.activity.name || ""),
+      expected_archived_at: String(root.activity.archived_at),
+      expected_revision: root.revision,
+      expected_draft_revision: root.draftRevision
+    }
+  }
+
+  function cancelDeleteArchived() {
+    root.deleteConfirm = null
+  }
+
+  function confirmDeleteArchived() {
+    if (root.busy || !root.deleteConfirm)
+      return
+    var frozen = root.deleteConfirm
+    root.deleteConfirm = null
+    dropUnsentAutosaves(frozen.activity_id)
+    runStore("delete-archived-activity", {
+      activity_id: frozen.activity_id,
+      expected_revision: frozen.expected_revision,
+      expected_draft_revision: frozen.expected_draft_revision,
+      expected_archived_at: frozen.expected_archived_at,
+      expected_name: frozen.expected_name
+    }, { activityId: frozen.activity_id })
   }
 
   function restoreCheckpoint(checkpointId) {
@@ -573,6 +609,7 @@ Panel {
   }
 
   function toggleArchived() {
+    root.deleteConfirm = null
     root.showArchived = !root.showArchived
     refresh()
   }
@@ -939,6 +976,18 @@ Panel {
       Qt.callLater(function() { root.refresh() })
       return
     }
+    if (action === "delete-archived-activity") {
+      root.deleteConfirm = null
+      dropUnsentAutosaves(op.activityId)
+      clearDraftState()
+      Qt.callLater(function() {
+        if (body.selected_activity_id)
+          root.runStore("get", { activity_id: body.selected_activity_id, include_archived: root.showArchived })
+        else
+          root.runStore("get", { include_archived: root.showArchived })
+      })
+      return
+    }
     if (action === "history") {
       var extra = body.entries || []
       var combined = (root.historyEntries || []).slice()
@@ -1162,6 +1211,44 @@ Panel {
               fontSize: Style.font.bodySmall
               bordered: true
               onClicked: { if (!root.busy) root.resolveConflictKeepEditing() }
+            }
+          }
+        }
+
+        Column {
+          width: parent.width
+          visible: !!root.deleteConfirm
+          spacing: Style.space(6)
+          Text {
+            width: parent.width
+            text: "Permanently delete \"" + (root.deleteConfirm ? root.deleteConfirm.expected_name : "") + "\"? This removes all checkpoints, history, links, and the draft. This cannot be undone."
+            color: root.fg
+            wrapMode: Text.WordWrap
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            textFormat: Text.PlainText
+          }
+          Row {
+            spacing: Style.space(6)
+            Button {
+              text: "Delete permanently"
+              focusable: (!root.busy)
+              opacity: (!root.busy) ? 1 : 0.45
+              foreground: root.fg
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              bordered: true
+              onClicked: { if (!root.busy) root.confirmDeleteArchived() }
+            }
+            Button {
+              text: "Cancel"
+              focusable: (!root.busy)
+              opacity: (!root.busy) ? 1 : 0.45
+              foreground: root.fg
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              bordered: true
+              onClicked: { if (!root.busy) root.cancelDeleteArchived() }
             }
           }
         }
@@ -1484,6 +1571,17 @@ Panel {
               fontSize: Style.font.bodySmall
               bordered: true
               onClicked: { if (!root.busy && root.hasActivity) root.archiveActivity(root.activity.id) }
+            }
+            Button {
+              visible: !!(root.activity && root.activity.archived_at)
+              text: "Delete permanently"
+              focusable: (!root.busy && !!(root.activity && root.activity.archived_at))
+              opacity: (!root.busy && !!(root.activity && root.activity.archived_at)) ? 1 : 0.45
+              foreground: root.fg
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              bordered: true
+              onClicked: { if (!root.busy && root.activity && root.activity.archived_at) root.requestDeleteArchived() }
             }
             Button {
               text: root.showArchived ? "Hide archived" : "Show archived"
