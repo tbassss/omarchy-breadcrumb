@@ -27,7 +27,7 @@ HEAD runtime/harness SHA-256 (also the native-tested bytes):
 | `tests/native/harness/delete-shell.qml` | `456f1a2dc01176a671dd42eea52601d3cbf2f59baeaf2ad6a12989b0fedd3835` |
 | `tests/native/harness/unarchive-shell.qml` | `f7e5ba2bca7da44c01e46bce306050687354da3ada8b6df1edccd061ba75a43c` |
 
-`git archive --format=tar HEAD` SHA-256: `24aeab8e017355df3b9e2ecbfe11e85bedeb56ca3154a4df6c0f1070bf1d4745`  
+`git archive --format=tar HEAD` SHA-256: `24aeab8e017355df3b9e2ecbfe11e85bedeb56ca3154a4df6c0f1070bf1d4745`
 Native worktree tar (Cave): `556504df322aa155cdcf46e056f3d7207830ba9793777cf835aed4b9bd307d8e`
 
 Tar vs HEAD: runtime, tests, harness, `CONTRIBUTING.md`, `docs/COMMAND.md`, `docs/IMPLEMENTATION.md` are byte-identical. Only `docs/UNARCHIVE_ACTIVITY.md` and `docs/DELETE_ARCHIVED_ACTIVITY.md` differ (receipts landed after the native run). Allowed docs-only successor of the tested runtime/harness.
